@@ -59,88 +59,97 @@ function useFireOnce(colRef, orderField = "order") {
 }
 
 // ── AutoInput ─────────────────────────────────────────────────────────────────
-function AutoInput({ value, onChange, options, placeholder, style }) {
-  const [open, setOpen]     = useState(false);
-  const [q, setQ]           = useState(value);
+function MenuInput({ value, onChange, options, placeholder, style }) {
+  const [open,    setOpen]    = useState(false);
+  const [local,   setLocal]   = useState(value);
   const [dropPos, setDropPos] = useState({ top:0, left:0, width:0 });
-  const composing  = useRef(false);
-  const localRef   = useRef(value);
-  const inputRef   = useRef(null);
-  const wrapRef    = useRef(null);
+  const composing = useRef(false);
+  const localRef  = useRef(value);
+  const inputRef  = useRef(null);
+  const btnRef    = useRef(null);
+  const dropRef   = useRef(null);
 
-  // Firebase 외부 업데이트 수신 (조합 중엔 무시)
-  useEffect(() => {
-    if (!composing.current) { setQ(value); localRef.current = value; }
-  }, [value]);
+  useEffect(() => { if (!composing.current) { setLocal(value); localRef.current = value; } }, [value]);
 
   // 드롭다운 위치 계산
   const updatePos = () => {
-    if (!inputRef.current) return;
-    const r = inputRef.current.getBoundingClientRect();
-    setDropPos({ top: r.bottom + 4, left: r.left, width: Math.max(180, r.width) });
+    const el = inputRef.current || btnRef.current;
+    if (!el) return;
+    const r = el.closest('[data-menu-wrap]')?.getBoundingClientRect() || el.getBoundingClientRect();
+    setDropPos({ top: r.bottom + 4, left: r.left, width: Math.max(200, r.width) });
   };
 
-  // 바깥 클릭 시 닫기
+  // 바깥 클릭 닫기
   useEffect(() => {
-    const h = e => { if (!wrapRef.current?.contains(e.target)) setOpen(false); };
+    const h = e => {
+      if (!dropRef.current?.contains(e.target) &&
+          !inputRef.current?.contains(e.target) &&
+          !btnRef.current?.contains(e.target)) setOpen(false);
+    };
     document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
+    document.addEventListener("touchstart", h);
+    return () => { document.removeEventListener("mousedown", h); document.removeEventListener("touchstart", h); };
   }, []);
 
-  // q 기준으로 options 필터 — 항상 최신 q 반영
-  const filtered = useMemo(() => {
-    if (!q.trim()) return options;
-    return options.filter(o => o.toLowerCase().includes(q.toLowerCase()));
-  }, [q, options]);
-
-  const pick = v => { setQ(v); localRef.current = v; onChange(v); setOpen(false); };
+  const pick = v => { setLocal(v); localRef.current = v; onChange(v); setOpen(false); };
 
   const handleChange = e => {
     const v = e.target.value;
-    setQ(v);
-    localRef.current = v;
-    updatePos();
-    setOpen(true);
+    setLocal(v); localRef.current = v;
     if (!composing.current) onChange(v);
   };
-
   const handleCompositionStart = () => { composing.current = true; };
-
-  const handleCompositionEnd = e => {
+  const handleCompositionEnd   = e => {
     composing.current = false;
     const v = e.target.value;
-    setQ(v);
-    localRef.current = v;
-    updatePos();
-    setOpen(true);
+    setLocal(v); localRef.current = v;
     setTimeout(() => onChange(v), 0);
+  };
+  const handleBlur = () => { if (!composing.current) onChange(localRef.current); };
+
+  const toggleDrop = e => {
+    e.preventDefault(); e.stopPropagation();
+    updatePos();
+    setOpen(o => !o);
   };
 
   return (
-    <div ref={wrapRef} style={{ position:"relative", flex:1 }}>
-      <input ref={inputRef} value={q}
+    <div data-menu-wrap style={{ display:"flex", alignItems:"center", flex:1, gap:4 }}>
+      <input ref={inputRef} value={local}
         onChange={handleChange}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
-        onFocus={() => { updatePos(); setOpen(true); }}
-        onBlur={() => { setTimeout(() => setOpen(false), 150); if (!composing.current) onChange(localRef.current); }}
-        placeholder={placeholder} style={style} />
-      {open && filtered.length > 0 && (
-        <div style={{ position:"fixed", top:dropPos.top, left:dropPos.left, width:dropPos.width,
-          background:"#1a1a2e", border:"1px solid #3d3d6a", borderRadius:10, zIndex:99999,
-          maxHeight:200, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.7)" }}>
-          {filtered.map((o, i) => (
+        onBlur={handleBlur}
+        placeholder={placeholder} style={{ ...style, flex:1 }} />
+      {/* 🔽 드롭다운 버튼 */}
+      <button ref={btnRef}
+        onMouseDown={toggleDrop}
+        onTouchEnd={toggleDrop}
+        style={{ flexShrink:0, background:"none", border:"none", color: open?"#6c63ff":"#3a3a6a",
+          fontSize:14, cursor:"pointer", padding:"2px 4px", lineHeight:1,
+          transition:"color .15s, transform .15s", transform: open?"rotate(180deg)":"rotate(0deg)" }}>▼</button>
+      {/* 드롭다운 목록 */}
+      {open && options.length > 0 && (
+        <div ref={dropRef} style={{ position:"fixed", top:dropPos.top, left:dropPos.left, width:dropPos.width,
+          background:"#1a1a2e", border:"1px solid #3d3d6a", borderRadius:12, zIndex:99999,
+          maxHeight:220, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.7)" }}>
+          {options.map((o, i) => (
             <div key={i}
               onMouseDown={e => { e.preventDefault(); pick(o); }}
-              style={{ padding:"10px 14px", fontSize:13, color:"#c8c8e8", cursor:"pointer", borderBottom:"1px solid #2d2d4a44" }}
+              onTouchEnd={e => { e.preventDefault(); pick(o); }}
+              style={{ padding:"11px 16px", fontSize:13, color:"#c8c8e8", cursor:"pointer",
+                borderBottom:"1px solid #2d2d4a33", display:"flex", alignItems:"center", gap:8 }}
               onMouseEnter={e => e.currentTarget.style.background="#2d2d4a"}
-              onMouseLeave={e => e.currentTarget.style.background="transparent"}>{o}</div>
+              onMouseLeave={e => e.currentTarget.style.background="transparent"}>
+              <span style={{ fontSize:10, color:"#4040a0" }}>▸</span>{o}
+            </div>
           ))}
         </div>
       )}
     </div>
   );
 }
+
 
 // ── ImeInput — 한글 조합 완료 후에만 Firebase 저장 ───────────────────────────
 function ImeInput({ value, onCommit, placeholder, style }) {
@@ -174,9 +183,11 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
   const onTouchMove  = e => {
     if (startXRef.current===null) return;
     const dx=e.touches[0].clientX-startXRef.current, dy=e.touches[0].clientY-startYRef.current;
+    // 수직 스크롤이면 무시
     if (!swipedRef.current&&Math.abs(dy)>Math.abs(dx)) return;
     if (Math.abs(dx)>6){swipedRef.current=true;setSwiping(true);}
     if (!swipedRef.current) return;
+    e.preventDefault(); // 수평 스와이프 시 페이지 이동 방지
     setOffsetX(Math.min(0,Math.max(-THRESHOLD-20,dx+(revealed?-THRESHOLD:0))));
   };
   const onTouchEnd = () => {
@@ -207,7 +218,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
       onDragEnter={()=>onDragEnter(idx)} onDragEnd={onDragEnd} onDragOver={e=>e.preventDefault()}
       onMouseEnter={()=>{if(!isTouch.current)setHovered(true);}}
       onMouseLeave={()=>{if(!isTouch.current)setHovered(false);}}
-      style={{ position:"relative", overflow:"hidden", borderRadius:12, marginBottom:6, userSelect:"none", opacity:isDragging?0.35:1, transition:"opacity .15s" }}>
+      style={{ position:"relative", overflow:"hidden", borderRadius:12, marginBottom:6, userSelect:"none", opacity:isDragging?0.35:1, transition:"opacity .15s", touchAction:"pan-y" }}>
       {/* 모바일 삭제 배경 — overflow:hidden 안에 있어야 카드 뒤에 숨겨짐 */}
       {isTouch.current&&(
         <div style={{
@@ -246,7 +257,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
         </label>
         <ImeInput value={row.name} onCommit={v=>onUpdate(row.id,{name:v})} placeholder={`이름 ${idx+1}`}
           style={{ background:"transparent", border:"none", fontSize:14, fontWeight:600, color:row.active?"#e0e0ff":"#606080", fontFamily:"inherit", width:"100%", textDecoration:row.active?"none":"line-through", outline:"none" }}/>
-        <AutoInput value={row.menu} onChange={v=>onUpdate(row.id,{menu:v})} options={menuOptions} placeholder="메뉴 입력/선택"
+        <MenuInput value={row.menu} onChange={v=>onUpdate(row.id,{menu:v})} options={menuOptions} placeholder="메뉴 입력/선택"
           style={{ background:"transparent", border:"none", fontSize:13, color:row.active?"#a0a0cc":"#505070", fontFamily:"inherit", width:"100%", textDecoration:row.active?"none":"line-through", outline:"none" }}/>
         {!isTouch.current&&(
           <button onClick={()=>onDelete(row.id)} style={{ opacity:hovered?1:0, background:"none", border:"none", color:"#ff6080", fontSize:18, display:"flex", alignItems:"center", justifyContent:"center", transition:"opacity .15s", padding:0 }}>×</button>
