@@ -50,30 +50,57 @@ function AutoInput({ value, onChange, options, placeholder, style }) {
   const localRef = useRef(value);
   const inputRef = useRef(null);
   const ref = useRef(null);
-  useEffect(() => { if (!composing.current) { setQ(value); localRef.current = value; } }, [value]);
+
+  // Firebase에서 외부 업데이트 올 때만 동기화 (조합 중엔 무시)
+  useEffect(() => {
+    if (!composing.current) { setQ(value); localRef.current = value; }
+  }, [value]);
+
+  // 드롭다운은 로컬 q 기준으로 필터 (Firebase 저장 여부와 무관)
   const filtered = q.trim() ? options.filter(o => o.toLowerCase().includes(q.toLowerCase())) : options;
   const pick = v => { setQ(v); localRef.current = v; onChange(v); setOpen(false); };
+
   const updatePos = () => {
     if (!inputRef.current) return;
     const r = inputRef.current.getBoundingClientRect();
     setDropPos({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX, width: Math.max(200, r.width) });
   };
+
   useEffect(() => {
     const h = e => { if (!ref.current?.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
+
+  const handleChange = e => {
+    const v = e.target.value;
+    setQ(v);                        // 화면 즉시 반영
+    localRef.current = v;
+    setOpen(true);
+    if (!composing.current) onChange(v); // 조합 중 아닐 때만 Firebase 저장
+  };
+
+  const handleCompositionEnd = e => {
+    composing.current = false;
+    const v = e.target.value;
+    setQ(v);                        // 마지막 글자 확정 반영
+    localRef.current = v;
+    setTimeout(() => onChange(v), 0); // 한 틱 뒤 Firebase 저장
+  };
+
   return (
     <div ref={ref} style={{ position:"relative", flex:1 }}>
       <input ref={inputRef} value={q}
-        onChange={e => { setQ(e.target.value); localRef.current = e.target.value; if (!composing.current) onChange(e.target.value); }}
+        onChange={handleChange}
         onCompositionStart={() => { composing.current = true; }}
-        onCompositionEnd={() => { composing.current = false; setTimeout(() => onChange(localRef.current), 0); }}
+        onCompositionEnd={handleCompositionEnd}
         onBlur={() => { if (!composing.current) onChange(localRef.current); }}
         onFocus={() => { updatePos(); setOpen(true); }}
         placeholder={placeholder} style={style} />
       {open && filtered.length > 0 && (
-        <div style={{ position:"fixed", top:dropPos.top, left:dropPos.left, width:dropPos.width, background:"#1a1a2e", border:"1px solid #2d2d4a", borderRadius:10, zIndex:9999, maxHeight:180, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.5)" }}>
+        <div style={{ position:"fixed", top:dropPos.top, left:dropPos.left, width:dropPos.width,
+          background:"#1a1a2e", border:"1px solid #2d2d4a", borderRadius:10, zIndex:9999,
+          maxHeight:180, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.5)" }}>
           {filtered.map((o, i) => (
             <div key={i} onMouseDown={() => pick(o)}
               style={{ padding:"9px 14px", fontSize:13, color:"#c8c8e8", cursor:"pointer", borderBottom:"1px solid #2d2d4a22" }}
