@@ -45,6 +45,7 @@ function useFireCollection(colRef, orderField = "order") {
 function AutoInput({ value, onChange, options, placeholder, style }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState(value);
+  const composing = useRef(false);
   const ref = useRef(null);
   useEffect(() => setQ(value), [value]);
   const filtered = q.trim() ? options.filter(o => o.toLowerCase().includes(q.toLowerCase())) : options;
@@ -56,7 +57,11 @@ function AutoInput({ value, onChange, options, placeholder, style }) {
   }, []);
   return (
     <div ref={ref} style={{ position:"relative", flex:1 }}>
-      <input value={q} onChange={e => { setQ(e.target.value); onChange(e.target.value); setOpen(true); }}
+      <input value={q}
+        onChange={e => { setQ(e.target.value); if (!composing.current) onChange(e.target.value); setOpen(true); }}
+        onCompositionStart={() => { composing.current = true; }}
+        onCompositionEnd={e => { composing.current = false; onChange(e.target.value); }}
+        onBlur={e => { if (!composing.current) onChange(e.target.value); }}
         onFocus={() => setOpen(true)} placeholder={placeholder} style={style} />
       {open && filtered.length > 0 && (
         <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, background:"#1a1a2e", border:"1px solid #2d2d4a", borderRadius:10, zIndex:999, maxHeight:180, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.5)" }}>
@@ -73,6 +78,24 @@ function AutoInput({ value, onChange, options, placeholder, style }) {
 }
 
 // ── 기기 감지 ─────────────────────────────────────────────────────────────────
+
+// ── ImeInput — 한글 조합 완료 후에만 Firebase 저장 ───────────────────────────
+function ImeInput({ value, onCommit, placeholder, style }) {
+  const [local, setLocal] = useState(value);
+  const composing = useRef(false);
+  useEffect(() => { setLocal(value); }, [value]);
+  return (
+    <input
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onCompositionStart={() => { composing.current = true; }}
+      onCompositionEnd={e => { composing.current = false; onCommit(e.target.value); }}
+      onBlur={e => { if (!composing.current) onCommit(e.target.value); }}
+      placeholder={placeholder}
+      style={style}
+    />
+  );
+}
 const isTouchDevice = () => window.matchMedia("(hover: none) and (pointer: coarse)").matches;
 
 // ── SwipeRow ──────────────────────────────────────────────────────────────────
@@ -135,7 +158,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           <input type="checkbox" checked={row.active} onChange={e=>onUpdate(row.id,{active:e.target.checked})}/>
           <span className="toggle-slider"/>
         </label>
-        <input value={row.name} onChange={e=>onUpdate(row.id,{name:e.target.value})} placeholder={`이름 ${idx+1}`}
+        <ImeInput value={row.name} onCommit={v=>onUpdate(row.id,{name:v})} placeholder={`이름 ${idx+1}`}
           style={{ background:"transparent", border:"none", fontSize:14, fontWeight:600, color:row.active?"#e0e0ff":"#606080", fontFamily:"inherit", width:"100%", textDecoration:row.active?"none":"line-through", outline:"none" }}/>
         <AutoInput value={row.menu} onChange={v=>onUpdate(row.id,{menu:v})} options={menuOptions} placeholder="메뉴 입력/선택"
           style={{ background:"transparent", border:"none", fontSize:13, color:row.active?"#a0a0cc":"#505070", fontFamily:"inherit", width:"100%", textDecoration:row.active?"none":"line-through", outline:"none" }}/>
