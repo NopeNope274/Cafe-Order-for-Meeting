@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
-  db, rowsCol, archiveCol, presetsCol,
+  db, rowsCol, archiveCol, presetsCol, menuHistoryCol,
   doc, onSnapshot, setDoc, deleteDoc, serverTimestamp,
 } from "./firebase.js";
 import { query, orderBy } from "firebase/firestore";
@@ -425,10 +425,11 @@ export default function App() {
   const [authed, setAuthed] = useState(() => localStorage.getItem(LS_AUTH) === "ok");
 
   // rows: 최초 1회만 로드 후 로컬 관리 (실시간 동기화 없음)
-  const [rows,    rowsReady,    setRows]    = useFireOnce(rowsCol,    "order");
-  // archive, presets: 실시간 구독
-  const [archive, archiveReady]             = useFireCollection(archiveCol, "order");
-  const [presets, presetsReady]             = useFireCollection(presetsCol, "order");
+  const [rows,         rowsReady,    setRows] = useFireOnce(rowsCol,        "order");
+  // archive, presets, menuHistory: 실시간 구독
+  const [archive,      archiveReady]          = useFireCollection(archiveCol,     "order");
+  const [presets,      presetsReady]          = useFireCollection(presetsCol,     "order");
+  const [menuHistory,  menuHistoryReady]      = useFireCollection(menuHistoryCol, "name");
 
   const [view,       setView]       = useState("order");
   const [toast,      setToast]      = useState(null);
@@ -446,22 +447,25 @@ export default function App() {
   const showToast = msg => { setToast(msg); clearTimeout(toastRef.current); toastRef.current=setTimeout(()=>setToast(null),2400); };
   const logout    = () => { localStorage.removeItem(LS_AUTH); setAuthed(false); };
 
-  // 자동완성: 아카이브에 저장된 모든 메뉴 + 현재 rows 메뉴 합산
-  const opts = useMemo(() => {
-    const seen = new Set();
-    const out = [];
-    // 아카이브 메뉴 (과거 주문 이력)
-    archive.forEach(e => e.orders?.forEach(o => {
-      const m = o.menu?.trim();
-      if (m && !seen.has(m)) { seen.add(m); out.push(m); }
-    }));
-    // 현재 rows 메뉴 (지금 입력 중인 것도 포함)
-    rows.forEach(r => {
-      const m = r.menu?.trim();
-      if (m && m !== "없음" && !seen.has(m)) { seen.add(m); out.push(m); }
-    });
-    return out.sort((a, b) => a.localeCompare(b, "ko"));
-  }, [archive, rows]);
+  // 자동완성: menuHistory(입력 즉시 저장) + 현재 rows + 아카이브
+  const optsSet = new Set();
+  const optsArr = [];
+  // 1순위: menuHistory — 한 번이라도 입력한 메뉴 전체
+  menuHistory.forEach(h => {
+    const m = h.name?.trim();
+    if (m && !optsSet.has(m)) { optsSet.add(m); optsArr.push(m); }
+  });
+  // 2순위: 현재 rows (아직 저장 안 됐어도 즉시 반영)
+  rows.forEach(r => {
+    const m = r.menu?.trim();
+    if (m && m !== "없음" && !optsSet.has(m)) { optsSet.add(m); optsArr.push(m); }
+  });
+  // 3순위: 아카이브
+  archive.forEach(e => e.orders?.forEach(o => {
+    const m = o.menu?.trim();
+    if (m && m !== "없음" && !optsSet.has(m)) { optsSet.add(m); optsArr.push(m); }
+  }));
+  const opts = optsArr.sort((a, b) => a.localeCompare(b, "ko"));
   const summ        = summary(rows);
   const activeCount = rows.filter(r=>r.active).length;
   const totalOrdered= rows.filter(r=>r.active&&r.menu?.trim()&&r.menu!=="없음").length;
@@ -469,6 +473,15 @@ export default function App() {
   // ── rows CRUD — 로컬 state만 (Firebase 저장은 확정/프리셋 시에만) ─────────
   const updateRow = useCallback((id, patch) => {
     setRows(prev => prev.map(r => r.id===id ? {...r,...patch} : r));
+    // 메뉴가 변경됐으면 menuHistory에 저장 (자동완성용)
+    if (patch.menu) {
+      const m = patch.menu.trim();
+      if (m && m !== "없음") {
+        // 메뉴명을 key로 써서 중복 없이 저장
+        const safeKey = m.replace(/[^a-zA-Z0-9가-힣]/g, "_");
+        setDoc(doc(db, "menuHistory", safeKey), { name: m, order: m }, { merge: true });
+      }
+    }
   }, [setRows]);
 
   const addRow = () => {
@@ -552,7 +565,7 @@ export default function App() {
   const personMonthly=useMemo(()=>{if(!selPerson)return[];const map={};archive.forEach(e=>{if(e.year!==statYear)return;const cnt=e.orders.filter(o=>o.name===selPerson).length;if(cnt)map[e.month]=(map[e.month]||0)+cnt;});return Array.from({length:12},(_,i)=>({label:`${i+1}월`,value:map[i+1]||0}));},[archive,selPerson,statYear]);
 
   if (!authed) return <PasswordGate onUnlock={()=>setAuthed(true)}/>;
-  if (!rowsReady||!archiveReady||!presetsReady) return <Loading/>;
+  if (!rowsReady||!archiveReady||!presetsReady||!menuHistoryReady) return <Loading/>;
 
   const TABS=[["order","📝 입력"],["summary","📊 요약"],["stats","📈 통계"]];
 
