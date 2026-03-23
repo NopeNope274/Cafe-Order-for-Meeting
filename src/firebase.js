@@ -9,6 +9,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 
+// ── Firebase 설정 (Vercel 환경변수로 관리) ───────────────────────────────────
 const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FB_API_KEY,
   authDomain:        import.meta.env.VITE_FB_AUTH_DOMAIN,
@@ -21,8 +22,11 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 
-export const rowsCol    = collection(db, "rows");
-export const archiveCol = collection(db, "archive");
-export const presetsCol = collection(db, "presets");
+// ── 컬렉션 참조 ───────────────────────────────────────────────────────────────
+export const rowsCol        = collection(db, "rows");
+export const archiveCol     = collection(db, "archive");
+export const presetsCol     = collection(db, "presets");
+export const menuHistoryCol = collection(db, "menuHistory");
 
+// ── 헬퍼 ─────────────────────────────────────────────────────────────────────
 export { doc, onSnapshot, setDoc, deleteDoc, serverTimestamp };
