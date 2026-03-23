@@ -58,64 +58,55 @@ function AutoInput({ value, onChange, options, placeholder, style }) {
   );
 }
 
-// ── SwipeRow — 스와이프 삭제 + 드래그 정렬 ───────────────────────────────────
+// ── 기기 감지 ─────────────────────────────────────────────────────────────────
+const isTouchDevice = () => window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+
+// ── SwipeRow — 스와이프 삭제(모바일) + 호버 삭제(PC) + 드래그 정렬 ──────────
 function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isOver, menuOptions }) {
-  const swipeRef   = useRef(null);
   const startXRef  = useRef(null);
   const startYRef  = useRef(null);
   const swipedRef  = useRef(false);
-  const [offsetX, setOffsetX]       = useState(0);
-  const [revealed, setRevealed]     = useState(false);
-  const [swiping, setSwiping]       = useState(false);
+  const isTouch    = useRef(isTouchDevice());
+  const [offsetX, setOffsetX]   = useState(0);
+  const [revealed, setRevealed] = useState(false);
+  const [swiping,  setSwiping]  = useState(false);
+  const [hovered,  setHovered]  = useState(false);
   const THRESHOLD = 72;
 
-  // ── touch handlers for swipe ──
+  // ── 모바일 스와이프 ──────────────────────────────────────────────────────
   const onTouchStart = e => {
     startXRef.current = e.touches[0].clientX;
     startYRef.current = e.touches[0].clientY;
     swipedRef.current = false;
     setSwiping(false);
   };
-
   const onTouchMove = e => {
     if (startXRef.current === null) return;
     const dx = e.touches[0].clientX - startXRef.current;
     const dy = e.touches[0].clientY - startYRef.current;
-    // ignore mostly-vertical movement (scrolling)
     if (!swipedRef.current && Math.abs(dy) > Math.abs(dx)) return;
     if (Math.abs(dx) > 6) { swipedRef.current = true; setSwiping(true); }
     if (!swipedRef.current) return;
     const next = Math.min(0, Math.max(-THRESHOLD - 20, dx + (revealed ? -THRESHOLD : 0)));
     setOffsetX(next);
   };
-
   const onTouchEnd = () => {
     if (!swipedRef.current) return;
-    if (offsetX < -THRESHOLD / 2) {
-      setOffsetX(-THRESHOLD);
-      setRevealed(true);
-    } else {
-      setOffsetX(0);
-      setRevealed(false);
-    }
+    if (offsetX < -THRESHOLD / 2) { setOffsetX(-THRESHOLD); setRevealed(true); }
+    else { setOffsetX(0); setRevealed(false); }
     setSwiping(false);
     startXRef.current = null;
   };
-
   const closeSwipe = () => { setOffsetX(0); setRevealed(false); };
 
-  // ── drag handle (pointer events) ──
-  const handleDragHandle = {
-    onPointerDown: e => {
-      e.currentTarget.parentElement.parentElement.setAttribute("draggable","true");
-    },
-    onPointerUp: e => {
-      e.currentTarget.parentElement.parentElement.setAttribute("draggable","false");
-    },
+  // ── 드래그 핸들 ──────────────────────────────────────────────────────────
+  const dragHandleProps = {
+    onPointerDown: e => { e.currentTarget.parentElement.parentElement.setAttribute("draggable","true"); },
+    onPointerUp:   e => { e.currentTarget.parentElement.parentElement.setAttribute("draggable","false"); },
   };
 
-  const opacity    = isDragging ? 0.35 : 1;
-  const borderCol  = isOver ? "rgba(108,99,255,0.6)" : row.active ? "rgba(108,99,255,0.15)" : "rgba(255,255,255,0.04)";
+  const opacity   = isDragging ? 0.35 : 1;
+  const borderCol = isOver ? "rgba(108,99,255,0.6)" : row.active ? "rgba(108,99,255,0.15)" : "rgba(255,255,255,0.04)";
 
   return (
     <div
@@ -124,26 +115,33 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
       onDragEnter={() => onDragEnter(idx)}
       onDragEnd={onDragEnd}
       onDragOver={e => e.preventDefault()}
+      onMouseEnter={() => { if (!isTouch.current) setHovered(true); }}
+      onMouseLeave={() => { if (!isTouch.current) setHovered(false); }}
       style={{ position:"relative", overflow:"hidden", borderRadius:12, marginBottom:6, userSelect:"none", opacity, transition:"opacity .15s" }}
     >
-      {/* 삭제 배경 (오른쪽에 숨어있음) */}
-      <div style={{ position:"absolute", right:0, top:0, bottom:0, width:THRESHOLD, background:"linear-gradient(90deg,transparent,rgba(255,60,80,0.85))", display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"0 12px 12px 0" }}>
-        <button onPointerDown={e=>{e.stopPropagation(); onDelete(row.id);}}
-          style={{ background:"none", border:"none", color:"#fff", fontSize:13, fontWeight:700, fontFamily:"inherit", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
-          <span style={{ fontSize:18 }}>🗑</span>
-          <span style={{ fontSize:10 }}>삭제</span>
-        </button>
-      </div>
+      {/* 모바일 전용 — 스와이프로 드러나는 삭제 배경 */}
+      {isTouch.current && (
+        <div style={{ position:"absolute", right:0, top:0, bottom:0, width:THRESHOLD, background:"linear-gradient(90deg,transparent,rgba(255,60,80,0.85))", display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"0 12px 12px 0" }}>
+          <button onPointerDown={e=>{e.stopPropagation(); onDelete(row.id);}}
+            style={{ background:"none", border:"none", color:"#fff", fontSize:13, fontWeight:700, fontFamily:"inherit", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
+            <span style={{ fontSize:18 }}>🗑</span>
+            <span style={{ fontSize:10 }}>삭제</span>
+          </button>
+        </div>
+      )}
 
-      {/* 실제 카드 */}
+      {/* 카드 본체 */}
       <div
-        ref={swipeRef}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
+        onTouchStart={isTouch.current ? onTouchStart : undefined}
+        onTouchMove={isTouch.current ? onTouchMove : undefined}
+        onTouchEnd={isTouch.current ? onTouchEnd : undefined}
         onClick={revealed ? closeSwipe : undefined}
         style={{
-          display:"grid", gridTemplateColumns:"22px 38px 1fr 1fr", gap:8, alignItems:"center",
+          display:"grid",
+          // PC: 핸들 | 토글 | 이름 | 메뉴 | 삭제버튼
+          // 모바일: 핸들 | 토글 | 이름 | 메뉴
+          gridTemplateColumns: isTouch.current ? "22px 38px 1fr 1fr" : "22px 38px 1fr 1fr 28px",
+          gap:8, alignItems:"center",
           background: isOver ? "rgba(108,99,255,0.1)" : row.active ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.015)",
           border:`1px solid ${borderCol}`,
           borderRadius:12, padding:"10px 12px",
@@ -154,7 +152,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
         }}
       >
         {/* 드래그 핸들 */}
-        <div {...handleDragHandle}
+        <div {...dragHandleProps}
           style={{ display:"flex", flexDirection:"column", gap:3, alignItems:"center", justifyContent:"center", cursor:"grab", padding:"4px 2px", touchAction:"none" }}>
           {[0,1,2].map(i=>(
             <div key={i} style={{ width:14, height:2, borderRadius:2, background:"#3a3a6a" }}/>
@@ -174,6 +172,14 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
         {/* 메뉴 */}
         <AutoInput value={row.menu} onChange={v=>onUpdate(row.id,{menu:v})} options={menuOptions} placeholder="메뉴 입력/선택"
           style={{ background:"transparent", border:"none", fontSize:13, color:row.active?"#a0a0cc":"#505070", fontFamily:"inherit", width:"100%", textDecoration:row.active?"none":"line-through", outline:"none" }}/>
+
+        {/* PC 전용 — 호버 시 × 삭제 버튼 */}
+        {!isTouch.current && (
+          <button onClick={()=>onDelete(row.id)}
+            style={{ opacity: hovered ? 1 : 0, background:"none", border:"none", color:"#ff6080", fontSize:18, display:"flex", alignItems:"center", justifyContent:"center", transition:"opacity .15s", padding:0, lineHeight:1 }}>
+            ×
+          </button>
+        )}
       </div>
     </div>
   );
