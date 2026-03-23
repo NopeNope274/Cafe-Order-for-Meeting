@@ -43,67 +43,79 @@ function useFireCollection(colRef, orderField = "order") {
 
 // ── AutoInput ─────────────────────────────────────────────────────────────────
 function AutoInput({ value, onChange, options, placeholder, style }) {
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState(value);
+  const [open, setOpen]     = useState(false);
+  const [q, setQ]           = useState(value);
   const [dropPos, setDropPos] = useState({ top:0, left:0, width:0 });
-  const composing = useRef(false);
-  const localRef = useRef(value);
-  const inputRef = useRef(null);
-  const ref = useRef(null);
+  const composing  = useRef(false);
+  const localRef   = useRef(value);
+  const inputRef   = useRef(null);
+  const wrapRef    = useRef(null);
 
-  // Firebase에서 외부 업데이트 올 때만 동기화 (조합 중엔 무시)
+  // Firebase 외부 업데이트 수신 (조합 중엔 무시)
   useEffect(() => {
     if (!composing.current) { setQ(value); localRef.current = value; }
   }, [value]);
 
-  // 드롭다운은 로컬 q 기준으로 필터 (Firebase 저장 여부와 무관)
-  const filtered = q.trim() ? options.filter(o => o.toLowerCase().includes(q.toLowerCase())) : options;
-  const pick = v => { setQ(v); localRef.current = v; onChange(v); setOpen(false); };
-
+  // 드롭다운 위치 계산
   const updatePos = () => {
     if (!inputRef.current) return;
     const r = inputRef.current.getBoundingClientRect();
-    setDropPos({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX, width: Math.max(200, r.width) });
+    setDropPos({ top: r.bottom + 4, left: r.left, width: Math.max(180, r.width) });
   };
 
+  // 바깥 클릭 시 닫기
   useEffect(() => {
-    const h = e => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    const h = e => { if (!wrapRef.current?.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
+  // q 기준으로 options 필터 — 항상 최신 q 반영
+  const filtered = useMemo(() => {
+    if (!q.trim()) return options;
+    return options.filter(o => o.toLowerCase().includes(q.toLowerCase()));
+  }, [q, options]);
+
+  const pick = v => { setQ(v); localRef.current = v; onChange(v); setOpen(false); };
+
   const handleChange = e => {
     const v = e.target.value;
-    setQ(v);                        // 화면 즉시 반영
+    setQ(v);
     localRef.current = v;
+    updatePos();
     setOpen(true);
-    if (!composing.current) onChange(v); // 조합 중 아닐 때만 Firebase 저장
+    if (!composing.current) onChange(v);
   };
+
+  const handleCompositionStart = () => { composing.current = true; };
 
   const handleCompositionEnd = e => {
     composing.current = false;
     const v = e.target.value;
-    setQ(v);                        // 마지막 글자 확정 반영
+    setQ(v);
     localRef.current = v;
-    setTimeout(() => onChange(v), 0); // 한 틱 뒤 Firebase 저장
+    updatePos();
+    setOpen(true);
+    setTimeout(() => onChange(v), 0);
   };
 
   return (
-    <div ref={ref} style={{ position:"relative", flex:1 }}>
+    <div ref={wrapRef} style={{ position:"relative", flex:1 }}>
       <input ref={inputRef} value={q}
         onChange={handleChange}
-        onCompositionStart={() => { composing.current = true; }}
+        onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
-        onBlur={() => { if (!composing.current) onChange(localRef.current); }}
         onFocus={() => { updatePos(); setOpen(true); }}
+        onBlur={() => { setTimeout(() => setOpen(false), 150); if (!composing.current) onChange(localRef.current); }}
         placeholder={placeholder} style={style} />
       {open && filtered.length > 0 && (
         <div style={{ position:"fixed", top:dropPos.top, left:dropPos.left, width:dropPos.width,
-          background:"#1a1a2e", border:"1px solid #2d2d4a", borderRadius:10, zIndex:9999,
-          maxHeight:180, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.5)" }}>
+          background:"#1a1a2e", border:"1px solid #3d3d6a", borderRadius:10, zIndex:99999,
+          maxHeight:200, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.7)" }}>
           {filtered.map((o, i) => (
-            <div key={i} onMouseDown={() => pick(o)}
-              style={{ padding:"9px 14px", fontSize:13, color:"#c8c8e8", cursor:"pointer", borderBottom:"1px solid #2d2d4a22" }}
+            <div key={i}
+              onMouseDown={e => { e.preventDefault(); pick(o); }}
+              style={{ padding:"10px 14px", fontSize:13, color:"#c8c8e8", cursor:"pointer", borderBottom:"1px solid #2d2d4a44" }}
               onMouseEnter={e => e.currentTarget.style.background="#2d2d4a"}
               onMouseLeave={e => e.currentTarget.style.background="transparent"}>{o}</div>
           ))}
@@ -112,8 +124,6 @@ function AutoInput({ value, onChange, options, placeholder, style }) {
     </div>
   );
 }
-
-// ── 기기 감지 ─────────────────────────────────────────────────────────────────
 
 // ── ImeInput — 한글 조합 완료 후에만 Firebase 저장 ───────────────────────────
 function ImeInput({ value, onCommit, placeholder, style }) {
@@ -173,9 +183,19 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
       onMouseEnter={()=>{if(!isTouch.current)setHovered(true);}}
       onMouseLeave={()=>{if(!isTouch.current)setHovered(false);}}
       style={{ position:"relative", overflow:"hidden", borderRadius:12, marginBottom:6, userSelect:"none", opacity:isDragging?0.35:1, transition:"opacity .15s" }}>
+      {/* 모바일 삭제 배경 — overflow:hidden 안에 있어야 카드 뒤에 숨겨짐 */}
       {isTouch.current&&(
-        <div style={{ position:"absolute", right:0, top:0, bottom:0, width:THRESHOLD, background:"linear-gradient(90deg,transparent,rgba(255,60,80,0.85))", display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"0 12px 12px 0" }}>
-          <button onPointerDown={e=>{e.stopPropagation();onDelete(row.id);}} style={{ background:"none", border:"none", color:"#fff", fontSize:13, fontWeight:700, fontFamily:"inherit", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
+        <div style={{
+          position:"absolute", right:0, top:0, bottom:0, width:THRESHOLD,
+          background:"linear-gradient(90deg,transparent,rgba(255,60,80,0.9))",
+          display:"flex", alignItems:"center", justifyContent:"center",
+          borderRadius:"0 12px 12px 0",
+          opacity: revealed ? 1 : 0,
+          transition:"opacity .2s",
+          pointerEvents: revealed ? "auto" : "none",
+        }}>
+          <button onPointerDown={e=>{e.stopPropagation();onDelete(row.id);}}
+            style={{ background:"none", border:"none", color:"#fff", fontSize:13, fontWeight:700, fontFamily:"inherit", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
             <span style={{ fontSize:18 }}>🗑</span><span style={{ fontSize:10 }}>삭제</span>
           </button>
         </div>
@@ -187,7 +207,9 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           background:isOver?"rgba(108,99,255,0.1)":row.active?"rgba(255,255,255,0.04)":"rgba(255,255,255,0.015)",
           border:`1px solid ${borderCol}`, borderRadius:12, padding:"10px 12px",
           opacity:row.active?1:0.5, transform:`translateX(${offsetX}px)`,
-          transition:swiping?"none":"transform .25s ease, border-color .15s", willChange:"transform" }}>
+          transition:swiping?"none":"transform .25s ease, border-color .15s", willChange:"transform",
+          position:"relative", zIndex:1,
+        }}>
         <div {...dragHandleProps} style={{ display:"flex", flexDirection:"column", gap:3, alignItems:"center", justifyContent:"center", cursor:"grab", padding:"4px 2px", touchAction:"none" }}>
           {[0,1,2].map(i=><div key={i} style={{ width:14, height:2, borderRadius:2, background:"#3a3a6a" }}/>)}
         </div>
