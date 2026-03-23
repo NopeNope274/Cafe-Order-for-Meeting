@@ -452,10 +452,12 @@ export default function App() {
   const logout    = () => { localStorage.removeItem(LS_AUTH); setAuthed(false); };
 
   // ── 자동완성 목록: Firebase menuHistory (입력/포커스아웃 시 자동 저장됨) ───
-  const menuOptions = useMemo(() =>
-    menuHistory.map(h => h.name).filter(Boolean).sort((a, b) => a.localeCompare(b, "ko")),
-    [menuHistory]
-  );
+  // useMemo 없이 직접 계산 (menuHistory 변경 즉시 반영)
+  const menuOptions = menuHistory
+    .map(h => h.name)
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, "ko"));
+  console.log("📋 menuOptions:", menuOptions.length, "개", menuOptions);
 
   // ── rows CRUD (로컬) ──────────────────────────────────────────────────────
   const updateRow = useCallback((id, patch) => {
