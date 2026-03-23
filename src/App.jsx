@@ -81,86 +81,57 @@ const saveMenuHistory = (menu) => {
 // 텍스트 직접 입력 + ▼ 버튼으로 이전 메뉴 목록 선택
 // onBlur 시 Firebase menuHistory에 저장 → 다음부터 목록에 표시
 function MenuInput({ value, onChange, options, placeholder, rowStyle }) {
-  const [local,   setLocal]   = useState(value);
-  const [open,    setOpen]    = useState(false);
-  const [pos,     setPos]     = useState({ top: 0, left: 0, width: 0 });
-  const wrapRef  = useRef(null);
-  const dropRef  = useRef(null);
+  const [local, setLocal] = useState(value);
+  const [open,  setOpen]  = useState(false);
+  const wrapRef = useRef(null);
 
   useEffect(() => { setLocal(value); }, [value]);
 
-  const calcPos = () => {
-    if (!wrapRef.current) return;
-    const r = wrapRef.current.getBoundingClientRect();
-    setPos({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX, width: Math.max(200, r.width) });
-  };
-
   useEffect(() => {
-    const close = e => {
-      if (!wrapRef.current?.contains(e.target) && !dropRef.current?.contains(e.target))
-        setOpen(false);
-    };
+    const close = e => { if (!wrapRef.current?.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", close);
     document.addEventListener("touchstart", close);
     return () => { document.removeEventListener("mousedown", close); document.removeEventListener("touchstart", close); };
   }, []);
 
-  const pick = (v) => {
-    setLocal(v);
-    onChange(v);
-    saveMenuHistory(v); // 선택한 메뉴도 저장
-    setOpen(false);
-  };
-
-  const handleBlur = (e) => {
-    const v = e.target.value.trim();
-    onChange(v);
-    saveMenuHistory(v); // 입력 완료 시 Firebase에 저장
-  };
-
-  const toggleDrop = (e) => {
-    e.preventDefault(); e.stopPropagation();
-    calcPos();
-    console.log("▼ 클릭 - options:", options.length, options);
-    setOpen(o => !o);
-  };
+  const pick = v => { setLocal(v); onChange(v); saveMenuHistory(v); setOpen(false); };
+  const handleBlur = e => { const v = e.target.value.trim(); onChange(v); saveMenuHistory(v); };
+  const toggleDrop = e => { e.preventDefault(); e.stopPropagation(); setOpen(o => !o); };
 
   return (
-    <div ref={wrapRef} style={{ display: "flex", alignItems: "center", flex: 1, gap: 4 }}>
+    <div ref={wrapRef} style={{ display: "flex", alignItems: "center", flex: 1, gap: 4, position: "relative" }}>
       <input
         value={local}
-        onChange={e => setLocal(e.target.value)}  // 로컬만 업데이트 (중간글자 Firebase 저장 방지)
-        onBlur={handleBlur}                        // 입력 완료 시에만 부모 + Firebase 저장
+        onChange={e => setLocal(e.target.value)}
+        onBlur={handleBlur}
         placeholder={placeholder}
         style={rowStyle}
       />
-      <button
-        onClick={toggleDrop}
-        style={{
-          flexShrink: 0, background: "none", border: "none",
-          color: open ? "#6c63ff" : "#3a3a6a",
-          fontSize: 13, cursor: "pointer", padding: "2px 6px", lineHeight: 1,
-          transition: "color .15s, transform .2s",
-          transform: open ? "rotate(180deg)" : "rotate(0deg)",
-        }}>▼</button>
-
+      <button onClick={toggleDrop} style={{
+        flexShrink: 0, background: "none", border: "none",
+        color: open ? "#6c63ff" : "#3a3a6a",
+        fontSize: 13, cursor: "pointer", padding: "2px 6px", lineHeight: 1,
+        transition: "color .15s, transform .2s",
+        transform: open ? "rotate(180deg)" : "rotate(0deg)",
+      }}>▼</button>
       {open && (
-        <div ref={dropRef} style={{
-          position: "fixed", top: pos.top, left: pos.left, width: pos.width,
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", right: 0,
+          minWidth: "200px", width: "max-content", maxWidth: "300px",
           background: "#13132a", border: "1px solid #3d3d6a", borderRadius: 12,
-          zIndex: 99999, maxHeight: 260, overflowY: "auto",
-          boxShadow: "0 8px 40px rgba(0,0,0,0.8)",
+          zIndex: 9999, maxHeight: 260, overflowY: "auto",
+          boxShadow: "0 8px 40px rgba(0,0,0,0.9)",
         }}>
           {options.length === 0
-            ? <div style={{ padding: "16px", fontSize: 12, color: "#404060", textAlign: "center" }}>
+            ? <div style={{ padding: "16px", fontSize: 12, color: "#606080", textAlign: "center" }}>
                 아직 메뉴 기록이 없어요<br/>
-                <span style={{ fontSize: 11, color: "#303050" }}>직접 입력하면 다음부터 여기 뜨게 돼요</span>
+                <span style={{ fontSize: 11 }}>입력 후 다른 칸 클릭하면 저장돼요</span>
               </div>
             : options.map((o, i) => (
                 <div key={i}
                   onMouseDown={e => { e.preventDefault(); pick(o); }}
                   onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); pick(o); }}
-                  style={{ padding: "11px 16px", fontSize: 13, color: "#c8c8e8", cursor: "pointer", borderBottom: "1px solid #2d2d4a33", display: "flex", alignItems: "center", gap: 8 }}
+                  style={{ padding: "11px 16px", fontSize: 13, color: "#c8c8e8", cursor: "pointer", borderBottom: "1px solid #2d2d4a33", display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}
                   onMouseEnter={e => e.currentTarget.style.background = "#2d2d4a"}
                   onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                   <span style={{ fontSize: 10, color: "#4040a0" }}>▸</span>{o}
@@ -217,11 +188,11 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
       onDragEnter={() => onDragEnter(idx)} onDragEnd={onDragEnd} onDragOver={e => e.preventDefault()}
       onMouseEnter={() => { if (!touch.current) setHovered(true); }}
       onMouseLeave={() => { if (!touch.current) setHovered(false); }}
-      style={{ position: "relative", overflow: "hidden", borderRadius: 12, marginBottom: 6, userSelect: "none", opacity: isDragging ? 0.35 : 1, touchAction: "pan-y" }}>
+      style={{ position: "relative", borderRadius: 12, marginBottom: 6, userSelect: "none", opacity: isDragging ? 0.35 : 1, touchAction: "pan-y" }}>
 
       {/* 모바일 삭제 배경 */}
       {touch.current && (
-        <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: THRESHOLD, background: "linear-gradient(90deg,transparent,rgba(255,50,70,0.9))", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "0 12px 12px 0", opacity: revealed ? 1 : 0, transition: "opacity .2s", pointerEvents: revealed ? "auto" : "none" }}>
+        <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: THRESHOLD, background: "linear-gradient(90deg,transparent,rgba(255,50,70,0.9))", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "0 12px 12px 0", opacity: revealed ? 1 : 0, transition: "opacity .2s", pointerEvents: revealed ? "auto" : "none", zIndex: 0 }}>
           <button
             onTouchEnd={e => { e.stopPropagation(); e.preventDefault(); onDelete(row.id); }}
             onClick={e => { e.stopPropagation(); onDelete(row.id); }}
@@ -237,7 +208,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
         onTouchMove={touch.current ? onTouchMove : undefined}
         onTouchEnd={touch.current ? onTouchEnd : undefined}
         onClick={revealed ? closeSwipe : undefined}
-        style={{ display: "grid", gridTemplateColumns: touch.current ? "22px 38px 1fr 1fr" : "22px 38px 1fr 1fr 28px", gap: 8, alignItems: "center", background: isOver ? "rgba(108,99,255,0.1)" : row.active ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.015)", border: `1px solid ${bc}`, borderRadius: 12, padding: "10px 12px", opacity: row.active ? 1 : 0.5, transform: `translateX(${offsetX}px)`, transition: swiping ? "none" : "transform .25s ease, border-color .15s", position: "relative", zIndex: 1 }}>
+        style={{ display: "grid", gridTemplateColumns: touch.current ? "22px 38px 1fr 1fr" : "22px 38px 1fr 1fr 28px", gap: 8, alignItems: "center", background: isOver ? "rgba(108,99,255,0.1)" : row.active ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.015)", border: `1px solid ${bc}`, borderRadius: 12, padding: "10px 12px", opacity: row.active ? 1 : 0.5, transform: `translateX(${offsetX}px)`, transition: swiping ? "none" : "transform .25s ease, border-color .15s", position: "relative", zIndex: 2, overflow: "visible" }}>
 
         {/* 드래그 핸들 */}
         <div {...dragProps} style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "center", justifyContent: "center", cursor: "grab", padding: "4px 2px", touchAction: "none" }}>
