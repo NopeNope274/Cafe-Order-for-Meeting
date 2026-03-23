@@ -45,11 +45,19 @@ function useFireCollection(colRef, orderField = "order") {
 function AutoInput({ value, onChange, options, placeholder, style }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState(value);
+  const [dropPos, setDropPos] = useState({ top:0, left:0, width:0 });
   const composing = useRef(false);
+  const localRef = useRef(value);
+  const inputRef = useRef(null);
   const ref = useRef(null);
-  useEffect(() => setQ(value), [value]);
+  useEffect(() => { if (!composing.current) { setQ(value); localRef.current = value; } }, [value]);
   const filtered = q.trim() ? options.filter(o => o.toLowerCase().includes(q.toLowerCase())) : options;
-  const pick = v => { setQ(v); onChange(v); setOpen(false); };
+  const pick = v => { setQ(v); localRef.current = v; onChange(v); setOpen(false); };
+  const updatePos = () => {
+    if (!inputRef.current) return;
+    const r = inputRef.current.getBoundingClientRect();
+    setDropPos({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX, width: Math.max(200, r.width) });
+  };
   useEffect(() => {
     const h = e => { if (!ref.current?.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", h);
@@ -57,14 +65,15 @@ function AutoInput({ value, onChange, options, placeholder, style }) {
   }, []);
   return (
     <div ref={ref} style={{ position:"relative", flex:1 }}>
-      <input value={q}
-        onChange={e => { setQ(e.target.value); if (!composing.current) onChange(e.target.value); setOpen(true); }}
+      <input ref={inputRef} value={q}
+        onChange={e => { setQ(e.target.value); localRef.current = e.target.value; if (!composing.current) onChange(e.target.value); }}
         onCompositionStart={() => { composing.current = true; }}
-        onCompositionEnd={e => { composing.current = false; onChange(e.target.value); }}
-        onBlur={e => { if (!composing.current) onChange(e.target.value); }}
-        onFocus={() => setOpen(true)} placeholder={placeholder} style={style} />
+        onCompositionEnd={() => { composing.current = false; setTimeout(() => onChange(localRef.current), 0); }}
+        onBlur={() => { if (!composing.current) onChange(localRef.current); }}
+        onFocus={() => { updatePos(); setOpen(true); }}
+        placeholder={placeholder} style={style} />
       {open && filtered.length > 0 && (
-        <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, background:"#1a1a2e", border:"1px solid #2d2d4a", borderRadius:10, zIndex:999, maxHeight:180, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.5)" }}>
+        <div style={{ position:"fixed", top:dropPos.top, left:dropPos.left, width:dropPos.width, background:"#1a1a2e", border:"1px solid #2d2d4a", borderRadius:10, zIndex:9999, maxHeight:180, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.5)" }}>
           {filtered.map((o, i) => (
             <div key={i} onMouseDown={() => pick(o)}
               style={{ padding:"9px 14px", fontSize:13, color:"#c8c8e8", cursor:"pointer", borderBottom:"1px solid #2d2d4a22" }}
@@ -83,14 +92,15 @@ function AutoInput({ value, onChange, options, placeholder, style }) {
 function ImeInput({ value, onCommit, placeholder, style }) {
   const [local, setLocal] = useState(value);
   const composing = useRef(false);
-  useEffect(() => { setLocal(value); }, [value]);
+  const localRef = useRef(value);
+  useEffect(() => { if (!composing.current) { setLocal(value); localRef.current = value; } }, [value]);
   return (
     <input
       value={local}
-      onChange={e => setLocal(e.target.value)}
+      onChange={e => { setLocal(e.target.value); localRef.current = e.target.value; if (!composing.current) onCommit(e.target.value); }}
       onCompositionStart={() => { composing.current = true; }}
-      onCompositionEnd={e => { composing.current = false; onCommit(e.target.value); }}
-      onBlur={e => { if (!composing.current) onCommit(e.target.value); }}
+      onCompositionEnd={() => { composing.current = false; setTimeout(() => onCommit(localRef.current), 0); }}
+      onBlur={() => { if (!composing.current) onCommit(localRef.current); }}
       placeholder={placeholder}
       style={style}
     />
