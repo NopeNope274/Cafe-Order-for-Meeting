@@ -41,6 +41,23 @@ function useFireCollection(colRef, orderField = "order") {
   return [docs, ready];
 }
 
+// ── useFireOnce — Firestore 컬렉션 1회만 읽기 (rows용) ───────────────────────
+function useFireOnce(colRef, orderField = "order") {
+  const [docs, setDocs] = useState([]);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const q = query(colRef, orderBy(orderField, "asc"));
+    // 최초 1회만 구독 후 바로 해제
+    const unsub = onSnapshot(q, snap => {
+      setDocs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setReady(true);
+      unsub(); // 구독 해제 — 이후 로컬에서만 관리
+    }, () => setReady(true));
+    return () => {};
+  }, []);
+  return [docs, ready, setDocs];
+}
+
 // ── AutoInput ─────────────────────────────────────────────────────────────────
 function AutoInput({ value, onChange, options, placeholder, style }) {
   const [open, setOpen]     = useState(false);
@@ -164,8 +181,16 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
   };
   const onTouchEnd = () => {
     if (!swipedRef.current) return;
-    if (offsetX<-THRESHOLD/2){setOffsetX(-THRESHOLD);setRevealed(true);}
-    else{setOffsetX(0);setRevealed(false);}
+    if (offsetX < -(THRESHOLD + 10)) {
+      // 끝까지 스와이프 → 즉시 삭제
+      onDelete(row.id);
+    } else if (offsetX < -THRESHOLD / 2) {
+      // 반 이상 스와이프 → 삭제 버튼 노출
+      setOffsetX(-THRESHOLD); setRevealed(true);
+    } else {
+      // 조금만 스와이프 → 원위치
+      setOffsetX(0); setRevealed(false);
+    }
     setSwiping(false); startXRef.current=null;
   };
   const closeSwipe = () => {setOffsetX(0);setRevealed(false);};
@@ -194,9 +219,11 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           transition:"opacity .2s",
           pointerEvents: revealed ? "auto" : "none",
         }}>
-          <button onPointerDown={e=>{e.stopPropagation();onDelete(row.id);}}
-            style={{ background:"none", border:"none", color:"#fff", fontSize:13, fontWeight:700, fontFamily:"inherit", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
-            <span style={{ fontSize:18 }}>🗑</span><span style={{ fontSize:10 }}>삭제</span>
+          <button
+            onTouchEnd={e=>{e.stopPropagation();e.preventDefault();onDelete(row.id);}}
+            onClick={e=>{e.stopPropagation();onDelete(row.id);}}
+            style={{ background:"none", border:"none", color:"#fff", fontSize:13, fontWeight:700, fontFamily:"inherit", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, padding:"8px 12px" }}>
+            <span style={{ fontSize:20 }}>🗑</span><span style={{ fontSize:10 }}>삭제</span>
           </button>
         </div>
       )}
@@ -386,10 +413,11 @@ function Loading() {
 export default function App() {
   const [authed, setAuthed] = useState(() => localStorage.getItem(LS_AUTH) === "ok");
 
-  // Firestore 실시간 구독
-  const [rows,    rowsReady]    = useFireCollection(rowsCol,    "order");
-  const [archive, archiveReady] = useFireCollection(archiveCol, "order");
-  const [presets, presetsReady] = useFireCollection(presetsCol, "order");
+  // rows: 최초 1회만 로드 후 로컬 관리 (실시간 동기화 없음)
+  const [rows,    rowsReady,    setRows]    = useFireOnce(rowsCol,    "order");
+  // archive, presets: 실시간 구독
+  const [archive, archiveReady]             = useFireCollection(archiveCol, "order");
+  const [presets, presetsReady]             = useFireCollection(presetsCol, "order");
 
   const [view,       setView]       = useState("order");
   const [toast,      setToast]      = useState(null);
@@ -407,49 +435,62 @@ export default function App() {
   const showToast = msg => { setToast(msg); clearTimeout(toastRef.current); toastRef.current=setTimeout(()=>setToast(null),2400); };
   const logout    = () => { localStorage.removeItem(LS_AUTH); setAuthed(false); };
 
-  const opts        = menuList(rows);
+  // 자동완성: 아카이브에 저장된 모든 메뉴 + 현재 rows 메뉴 합산
+  const opts = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    // 아카이브 메뉴 (과거 주문 이력)
+    archive.forEach(e => e.orders?.forEach(o => {
+      const m = o.menu?.trim();
+      if (m && !seen.has(m)) { seen.add(m); out.push(m); }
+    }));
+    // 현재 rows 메뉴 (지금 입력 중인 것도 포함)
+    rows.forEach(r => {
+      const m = r.menu?.trim();
+      if (m && m !== "없음" && !seen.has(m)) { seen.add(m); out.push(m); }
+    });
+    return out.sort((a, b) => a.localeCompare(b, "ko"));
+  }, [archive, rows]);
   const summ        = summary(rows);
   const activeCount = rows.filter(r=>r.active).length;
   const totalOrdered= rows.filter(r=>r.active&&r.menu?.trim()&&r.menu!=="없음").length;
 
-  // ── Firestore CRUD ────────────────────────────────────────────────────────
-  const updateRow = useCallback(async (id, patch) => {
-    const current = rows.find(r=>r.id===id);
-    if (!current) return;
-    await setDoc(doc(db,"rows",id), { ...current, ...patch }, { merge:true });
-  }, [rows]);
+  // ── rows CRUD — 로컬 state만 (Firebase 저장은 확정/프리셋 시에만) ─────────
+  const updateRow = useCallback((id, patch) => {
+    setRows(prev => prev.map(r => r.id===id ? {...r,...patch} : r));
+  }, [setRows]);
 
-  const addRow = async () => {
-    const id = uid();
-    await setDoc(doc(db,"rows",id), { id, name:"", menu:"", active:true, order: Date.now() });
+  const addRow = () => {
+    setRows(prev => [...prev, { id:uid(), name:"", menu:"", active:true, order:Date.now() }]);
   };
 
-  const deleteRow = async id => {
-    await deleteDoc(doc(db,"rows",id));
+  const deleteRow = id => {
+    setRows(prev => prev.filter(r => r.id !== id));
     showToast("삭제됐어요 🗑");
   };
 
-  const resetRows = async () => {
+  const resetRows = () => {
     if (!window.confirm("현재 주문을 초기화할까요?\n(프리셋·아카이브는 유지됩니다)")) return;
-    await Promise.all(rows.map(r => deleteDoc(doc(db,"rows",r.id))));
+    setRows([]);
     showToast("초기화 완료!");
   };
 
-  // ── 드래그 정렬 ──────────────────────────────────────────────────────────
+  // ── 드래그 정렬 — 로컬만 ────────────────────────────────────────────────
   const handleDragStart = useCallback(idx => { dragIdx.current=idx; setDraggingIdx(idx); }, []);
   const handleDragEnter = useCallback(idx => { overIdx.current=idx; setOverIndex(idx); }, []);
-  const handleDragEnd   = useCallback(async () => {
+  const handleDragEnd   = useCallback(() => {
     const from=dragIdx.current, to=overIdx.current;
     if (from!==null&&to!==null&&from!==to) {
-      const next=[...rows];
-      const [moved]=next.splice(from,1);
-      next.splice(to,0,moved);
-      // order 값 재할당
-      await Promise.all(next.map((r,i) => setDoc(doc(db,"rows",r.id), {...r, order:i}, {merge:true})));
+      setRows(prev => {
+        const next=[...prev];
+        const [moved]=next.splice(from,1);
+        next.splice(to,0,moved);
+        return next;
+      });
     }
     dragIdx.current=null; overIdx.current=null;
     setDraggingIdx(null); setOverIndex(null);
-  }, [rows]);
+  }, [setRows]);
 
   // ── 프리셋 ───────────────────────────────────────────────────────────────
   const savePreset = async name => {
@@ -458,13 +499,8 @@ export default function App() {
     showToast(`💾 '${name}' 프리셋 저장 완료!`);
   };
 
-  const loadPreset = async preset => {
-    // 기존 rows 전체 삭제 후 프리셋 멤버로 교체
-    await Promise.all(rows.map(r=>deleteDoc(doc(db,"rows",r.id))));
-    await Promise.all(preset.members.map((m,i) => {
-      const id=uid();
-      return setDoc(doc(db,"rows",id), {id, name:m.name, menu:"", active:m.active, order:i});
-    }));
+  const loadPreset = preset => {
+    setRows(preset.members.map((m,i) => ({ id:uid(), name:m.name, menu:"", active:m.active, order:i })));
     showToast(`📂 '${preset.name}' 불러왔어요!`);
   };
 
