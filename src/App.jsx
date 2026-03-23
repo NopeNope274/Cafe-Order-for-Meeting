@@ -30,7 +30,7 @@ const getSummary = (rows) => {
   return Object.entries(map).sort((a, b) => b[1] - a[1]);
 };
 
-// ── useFireCol: Firestore 실시간 구독 ────────────────────────────────────────
+// ── useFireCol: Firestore 실시간 구독 (orderBy 사용) ─────────────────────────
 function useFireCol(col, orderField = "order") {
   const [docs,  setDocs]  = useState([]);
   const [ready, setReady] = useState(false);
@@ -39,6 +39,20 @@ function useFireCol(col, orderField = "order") {
     const unsub = onSnapshot(q,
       snap => { setDocs(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setReady(true); },
       ()   => setReady(true)
+    );
+    return unsub;
+  }, []);
+  return [docs, ready];
+}
+
+// ── useFireColNoOrder: orderBy 없이 구독 (인덱스 불필요) ─────────────────────
+function useFireColNoOrder(col) {
+  const [docs,  setDocs]  = useState([]);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const unsub = onSnapshot(col,
+      snap => { setDocs(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setReady(true); },
+      err  => { console.warn("menuHistory fetch error:", err); setReady(true); }
     );
     return unsub;
   }, []);
@@ -411,7 +425,7 @@ export default function App() {
   // Firebase 실시간 구독 (archive, presets, menuHistory)
   const [archive,     archiveReady]     = useFireCol(archiveCol,     "order");
   const [presets,     presetsReady]     = useFireCol(presetsCol,     "order");
-  const [menuHistory, menuHistoryReady] = useFireCol(menuHistoryCol, "name");
+  const [menuHistory, menuHistoryReady] = useFireColNoOrder(menuHistoryCol);
 
   const [view,       setView]       = useState("order");
   const [toast,      setToast]      = useState(null);
