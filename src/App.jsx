@@ -118,8 +118,8 @@ function MenuInput({ value, onChange, options, placeholder, rowStyle }) {
     <div ref={wrapRef} style={{ display: "flex", alignItems: "center", flex: 1, gap: 4 }}>
       <input
         value={local}
-        onChange={e => { setLocal(e.target.value); onChange(e.target.value); }}
-        onBlur={handleBlur}
+        onChange={e => setLocal(e.target.value)}  // 로컬만 업데이트 (중간글자 Firebase 저장 방지)
+        onBlur={handleBlur}                        // 입력 완료 시에만 부모 + Firebase 저장
         placeholder={placeholder}
         style={rowStyle}
       />
