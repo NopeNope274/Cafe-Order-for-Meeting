@@ -50,9 +50,18 @@ function useFireColNoOrder(col) {
   const [docs,  setDocs]  = useState([]);
   const [ready, setReady] = useState(false);
   useEffect(() => {
+    console.log("🔥 menuHistory 구독 시작");
     const unsub = onSnapshot(col,
-      snap => { setDocs(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setReady(true); },
-      err  => { console.warn("menuHistory fetch error:", err); setReady(true); }
+      snap => {
+        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        console.log("🔥 menuHistory 수신:", data.length, "개", data.map(d=>d.name));
+        setDocs(data);
+        setReady(true);
+      },
+      err => {
+        console.error("🔥 menuHistory 에러:", err.code, err.message);
+        setReady(true);
+      }
     );
     return unsub;
   }, []);
