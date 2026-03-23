@@ -120,7 +120,9 @@ function MenuInput({ value, onChange, options, placeholder, rowStyle }) {
 
   const toggleDrop = (e) => {
     e.preventDefault(); e.stopPropagation();
-    calcPos(); setOpen(o => !o);
+    calcPos();
+    console.log("▼ 클릭 - options:", options.length, options);
+    setOpen(o => !o);
   };
 
   return (
@@ -133,8 +135,7 @@ function MenuInput({ value, onChange, options, placeholder, rowStyle }) {
         style={rowStyle}
       />
       <button
-        onMouseDown={toggleDrop}
-        onTouchEnd={toggleDrop}
+        onClick={toggleDrop}
         style={{
           flexShrink: 0, background: "none", border: "none",
           color: open ? "#6c63ff" : "#3a3a6a",
