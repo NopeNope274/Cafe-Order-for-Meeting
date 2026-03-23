@@ -1,14 +1,13 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import {
+  db, rowsCol, archiveCol, presetsCol,
+  doc, onSnapshot, setDoc, deleteDoc, serverTimestamp,
+} from "./firebase.js";
+import { query, orderBy } from "firebase/firestore";
 
-// ── env / storage ─────────────────────────────────────────────────────────────
+// ── auth (LocalStorage만 — 비번은 기기별로 OK) ───────────────────────────────
 const APP_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
-const LS_ROWS    = "ocv3_rows";
-const LS_AUTH    = "ocv3_auth";
-const LS_ARCHIVE = "ocv3_archive";
-const LS_PRESETS = "ocv3_presets";
-
-const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
-const load  = (k, fb) => { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : fb; } catch { return fb; } };
+const LS_AUTH = "ocv3_auth";
 
 let _id = Date.now();
 const uid = () => String(++_id);
@@ -26,6 +25,21 @@ const summary = (rows) => {
 
 const PALETTE = ["#6c63ff","#48c6ef","#f0a050","#ff6090","#50e0a0","#f0d050","#c070ff","#60c0ff"];
 const col = (i) => PALETTE[i % PALETTE.length];
+
+// ── useFireCollection — Firestore 컬렉션 실시간 구독 ─────────────────────────
+function useFireCollection(colRef, orderField = "order") {
+  const [docs, setDocs] = useState([]);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const q = query(colRef, orderBy(orderField, "asc"));
+    const unsub = onSnapshot(q, snap => {
+      setDocs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setReady(true);
+    }, () => setReady(true));
+    return unsub;
+  }, []);
+  return [docs, ready];
+}
 
 // ── AutoInput ─────────────────────────────────────────────────────────────────
 function AutoInput({ value, onChange, options, placeholder, style }) {
@@ -61,124 +75,72 @@ function AutoInput({ value, onChange, options, placeholder, style }) {
 // ── 기기 감지 ─────────────────────────────────────────────────────────────────
 const isTouchDevice = () => window.matchMedia("(hover: none) and (pointer: coarse)").matches;
 
-// ── SwipeRow — 스와이프 삭제(모바일) + 호버 삭제(PC) + 드래그 정렬 ──────────
+// ── SwipeRow ──────────────────────────────────────────────────────────────────
 function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isOver, menuOptions }) {
-  const startXRef  = useRef(null);
-  const startYRef  = useRef(null);
-  const swipedRef  = useRef(false);
-  const isTouch    = useRef(isTouchDevice());
-  const [offsetX, setOffsetX]   = useState(0);
-  const [revealed, setRevealed] = useState(false);
-  const [swiping,  setSwiping]  = useState(false);
-  const [hovered,  setHovered]  = useState(false);
+  const startXRef = useRef(null); const startYRef = useRef(null);
+  const swipedRef = useRef(false); const isTouch = useRef(isTouchDevice());
+  const [offsetX, setOffsetX] = useState(0); const [revealed, setRevealed] = useState(false);
+  const [swiping, setSwiping] = useState(false); const [hovered, setHovered] = useState(false);
   const THRESHOLD = 72;
 
-  // ── 모바일 스와이프 ──────────────────────────────────────────────────────
-  const onTouchStart = e => {
-    startXRef.current = e.touches[0].clientX;
-    startYRef.current = e.touches[0].clientY;
-    swipedRef.current = false;
-    setSwiping(false);
-  };
-  const onTouchMove = e => {
-    if (startXRef.current === null) return;
-    const dx = e.touches[0].clientX - startXRef.current;
-    const dy = e.touches[0].clientY - startYRef.current;
-    if (!swipedRef.current && Math.abs(dy) > Math.abs(dx)) return;
-    if (Math.abs(dx) > 6) { swipedRef.current = true; setSwiping(true); }
+  const onTouchStart = e => { startXRef.current=e.touches[0].clientX; startYRef.current=e.touches[0].clientY; swipedRef.current=false; setSwiping(false); };
+  const onTouchMove  = e => {
+    if (startXRef.current===null) return;
+    const dx=e.touches[0].clientX-startXRef.current, dy=e.touches[0].clientY-startYRef.current;
+    if (!swipedRef.current&&Math.abs(dy)>Math.abs(dx)) return;
+    if (Math.abs(dx)>6){swipedRef.current=true;setSwiping(true);}
     if (!swipedRef.current) return;
-    const next = Math.min(0, Math.max(-THRESHOLD - 20, dx + (revealed ? -THRESHOLD : 0)));
-    setOffsetX(next);
+    setOffsetX(Math.min(0,Math.max(-THRESHOLD-20,dx+(revealed?-THRESHOLD:0))));
   };
   const onTouchEnd = () => {
     if (!swipedRef.current) return;
-    if (offsetX < -THRESHOLD / 2) { setOffsetX(-THRESHOLD); setRevealed(true); }
-    else { setOffsetX(0); setRevealed(false); }
-    setSwiping(false);
-    startXRef.current = null;
+    if (offsetX<-THRESHOLD/2){setOffsetX(-THRESHOLD);setRevealed(true);}
+    else{setOffsetX(0);setRevealed(false);}
+    setSwiping(false); startXRef.current=null;
   };
-  const closeSwipe = () => { setOffsetX(0); setRevealed(false); };
-
-  // ── 드래그 핸들 ──────────────────────────────────────────────────────────
+  const closeSwipe = () => {setOffsetX(0);setRevealed(false);};
   const dragHandleProps = {
-    onPointerDown: e => { e.currentTarget.parentElement.parentElement.setAttribute("draggable","true"); },
-    onPointerUp:   e => { e.currentTarget.parentElement.parentElement.setAttribute("draggable","false"); },
+    onPointerDown: e=>{e.currentTarget.parentElement.parentElement.setAttribute("draggable","true");},
+    onPointerUp:   e=>{e.currentTarget.parentElement.parentElement.setAttribute("draggable","false");},
   };
 
-  const opacity   = isDragging ? 0.35 : 1;
-  const borderCol = isOver ? "rgba(108,99,255,0.6)" : row.active ? "rgba(108,99,255,0.15)" : "rgba(255,255,255,0.04)";
+  const borderCol = isOver?"rgba(108,99,255,0.6)":row.active?"rgba(108,99,255,0.15)":"rgba(255,255,255,0.04)";
 
   return (
-    <div
-      draggable={false}
-      onDragStart={e => { e.dataTransfer.effectAllowed="move"; onDragStart(idx); }}
-      onDragEnter={() => onDragEnter(idx)}
-      onDragEnd={onDragEnd}
-      onDragOver={e => e.preventDefault()}
-      onMouseEnter={() => { if (!isTouch.current) setHovered(true); }}
-      onMouseLeave={() => { if (!isTouch.current) setHovered(false); }}
-      style={{ position:"relative", overflow:"hidden", borderRadius:12, marginBottom:6, userSelect:"none", opacity, transition:"opacity .15s" }}
-    >
-      {/* 모바일 전용 — 스와이프로 드러나는 삭제 배경 */}
-      {isTouch.current && (
+    <div draggable={false}
+      onDragStart={e=>{e.dataTransfer.effectAllowed="move";onDragStart(idx);}}
+      onDragEnter={()=>onDragEnter(idx)} onDragEnd={onDragEnd} onDragOver={e=>e.preventDefault()}
+      onMouseEnter={()=>{if(!isTouch.current)setHovered(true);}}
+      onMouseLeave={()=>{if(!isTouch.current)setHovered(false);}}
+      style={{ position:"relative", overflow:"hidden", borderRadius:12, marginBottom:6, userSelect:"none", opacity:isDragging?0.35:1, transition:"opacity .15s" }}>
+      {isTouch.current&&(
         <div style={{ position:"absolute", right:0, top:0, bottom:0, width:THRESHOLD, background:"linear-gradient(90deg,transparent,rgba(255,60,80,0.85))", display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"0 12px 12px 0" }}>
-          <button onPointerDown={e=>{e.stopPropagation(); onDelete(row.id);}}
-            style={{ background:"none", border:"none", color:"#fff", fontSize:13, fontWeight:700, fontFamily:"inherit", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
-            <span style={{ fontSize:18 }}>🗑</span>
-            <span style={{ fontSize:10 }}>삭제</span>
+          <button onPointerDown={e=>{e.stopPropagation();onDelete(row.id);}} style={{ background:"none", border:"none", color:"#fff", fontSize:13, fontWeight:700, fontFamily:"inherit", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
+            <span style={{ fontSize:18 }}>🗑</span><span style={{ fontSize:10 }}>삭제</span>
           </button>
         </div>
       )}
-
-      {/* 카드 본체 */}
-      <div
-        onTouchStart={isTouch.current ? onTouchStart : undefined}
-        onTouchMove={isTouch.current ? onTouchMove : undefined}
-        onTouchEnd={isTouch.current ? onTouchEnd : undefined}
-        onClick={revealed ? closeSwipe : undefined}
-        style={{
-          display:"grid",
-          // PC: 핸들 | 토글 | 이름 | 메뉴 | 삭제버튼
-          // 모바일: 핸들 | 토글 | 이름 | 메뉴
-          gridTemplateColumns: isTouch.current ? "22px 38px 1fr 1fr" : "22px 38px 1fr 1fr 28px",
+      <div onTouchStart={isTouch.current?onTouchStart:undefined} onTouchMove={isTouch.current?onTouchMove:undefined}
+        onTouchEnd={isTouch.current?onTouchEnd:undefined} onClick={revealed?closeSwipe:undefined}
+        style={{ display:"grid", gridTemplateColumns:isTouch.current?"22px 38px 1fr 1fr":"22px 38px 1fr 1fr 28px",
           gap:8, alignItems:"center",
-          background: isOver ? "rgba(108,99,255,0.1)" : row.active ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.015)",
-          border:`1px solid ${borderCol}`,
-          borderRadius:12, padding:"10px 12px",
-          opacity: row.active ? 1 : 0.5,
-          transform:`translateX(${offsetX}px)`,
-          transition: swiping ? "none" : "transform .25s ease, border-color .15s, background .15s",
-          willChange:"transform",
-        }}
-      >
-        {/* 드래그 핸들 */}
-        <div {...dragHandleProps}
-          style={{ display:"flex", flexDirection:"column", gap:3, alignItems:"center", justifyContent:"center", cursor:"grab", padding:"4px 2px", touchAction:"none" }}>
-          {[0,1,2].map(i=>(
-            <div key={i} style={{ width:14, height:2, borderRadius:2, background:"#3a3a6a" }}/>
-          ))}
+          background:isOver?"rgba(108,99,255,0.1)":row.active?"rgba(255,255,255,0.04)":"rgba(255,255,255,0.015)",
+          border:`1px solid ${borderCol}`, borderRadius:12, padding:"10px 12px",
+          opacity:row.active?1:0.5, transform:`translateX(${offsetX}px)`,
+          transition:swiping?"none":"transform .25s ease, border-color .15s", willChange:"transform" }}>
+        <div {...dragHandleProps} style={{ display:"flex", flexDirection:"column", gap:3, alignItems:"center", justifyContent:"center", cursor:"grab", padding:"4px 2px", touchAction:"none" }}>
+          {[0,1,2].map(i=><div key={i} style={{ width:14, height:2, borderRadius:2, background:"#3a3a6a" }}/>)}
         </div>
-
-        {/* 토글 */}
         <label className="toggle-wrap" style={{ touchAction:"none" }}>
           <input type="checkbox" checked={row.active} onChange={e=>onUpdate(row.id,{active:e.target.checked})}/>
           <span className="toggle-slider"/>
         </label>
-
-        {/* 이름 */}
         <input value={row.name} onChange={e=>onUpdate(row.id,{name:e.target.value})} placeholder={`이름 ${idx+1}`}
           style={{ background:"transparent", border:"none", fontSize:14, fontWeight:600, color:row.active?"#e0e0ff":"#606080", fontFamily:"inherit", width:"100%", textDecoration:row.active?"none":"line-through", outline:"none" }}/>
-
-        {/* 메뉴 */}
         <AutoInput value={row.menu} onChange={v=>onUpdate(row.id,{menu:v})} options={menuOptions} placeholder="메뉴 입력/선택"
           style={{ background:"transparent", border:"none", fontSize:13, color:row.active?"#a0a0cc":"#505070", fontFamily:"inherit", width:"100%", textDecoration:row.active?"none":"line-through", outline:"none" }}/>
-
-        {/* PC 전용 — 호버 시 × 삭제 버튼 */}
-        {!isTouch.current && (
-          <button onClick={()=>onDelete(row.id)}
-            style={{ opacity: hovered ? 1 : 0, background:"none", border:"none", color:"#ff6080", fontSize:18, display:"flex", alignItems:"center", justifyContent:"center", transition:"opacity .15s", padding:0, lineHeight:1 }}>
-            ×
-          </button>
+        {!isTouch.current&&(
+          <button onClick={()=>onDelete(row.id)} style={{ opacity:hovered?1:0, background:"none", border:"none", color:"#ff6080", fontSize:18, display:"flex", alignItems:"center", justifyContent:"center", transition:"opacity .15s", padding:0 }}>×</button>
         )}
       </div>
     </div>
@@ -187,11 +149,11 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
 
 // ── PasswordGate ──────────────────────────────────────────────────────────────
 function PasswordGate({ onUnlock }) {
-  const [pw, setPw] = useState(""); const [shake, setShake] = useState(false);
-  const [show, setShow] = useState(false); const [wrong, setWrong] = useState(false);
-  const tryUnlock = () => {
-    if (pw === APP_PASSWORD) { localStorage.setItem(LS_AUTH, "ok"); onUnlock(); }
-    else { setShake(true); setWrong(true); setPw(""); setTimeout(() => setShake(false), 500); }
+  const [pw,setPw]=useState(""); const [shake,setShake]=useState(false);
+  const [show,setShow]=useState(false); const [wrong,setWrong]=useState(false);
+  const tryUnlock=()=>{
+    if(pw===APP_PASSWORD){localStorage.setItem(LS_AUTH,"ok");onUnlock();}
+    else{setShake(true);setWrong(true);setPw("");setTimeout(()=>setShake(false),500);}
   };
   return (
     <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:"linear-gradient(135deg,#0d0d1a,#12122a,#0d1a2a)", padding:24 }}>
@@ -201,7 +163,7 @@ function PasswordGate({ onUnlock }) {
         @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
         @keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-10px)}40%{transform:translateX(10px)}60%{transform:translateX(-8px)}80%{transform:translateX(8px)}}
         .gate{animation:fadeUp .4s ease} .shake{animation:shake .45s ease!important}
-        .ubtn{transition:all .15s;cursor:pointer;border:none} .ubtn:hover{filter:brightness(1.15);transform:translateY(-1px)} .ubtn:active{transform:translateY(0)}
+        .ubtn{transition:all .15s;cursor:pointer;border:none} .ubtn:hover{filter:brightness(1.15);transform:translateY(-1px)}
       `}</style>
       <div className={`gate${shake?" shake":""}`} style={{ width:"100%", maxWidth:360, background:"rgba(255,255,255,0.04)", border:"1px solid rgba(108,99,255,0.2)", borderRadius:24, padding:"40px 32px", boxShadow:"0 24px 64px rgba(0,0,0,0.4)" }}>
         <div style={{ width:56, height:56, borderRadius:16, margin:"0 auto 24px", background:"linear-gradient(135deg,rgba(108,99,255,0.2),rgba(72,198,239,0.15))", border:"1px solid rgba(108,99,255,0.3)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:24 }}>🔐</div>
@@ -225,19 +187,10 @@ function PasswordGate({ onUnlock }) {
 
 // ── Preset Modal ──────────────────────────────────────────────────────────────
 function PresetModal({ presets, currentRows, onSave, onLoad, onDelete, onClose }) {
-  const [mode, setMode]     = useState("load");
-  const [newName, setNewName] = useState("");
-  const [confirm, setConfirm] = useState(null);
-
-  const handleSave = () => {
-    const name = newName.trim();
-    if (!name || !currentRows.length) return;
-    onSave(name); setNewName(""); setMode("load");
-  };
-
+  const [mode,setMode]=useState("load"); const [newName,setNewName]=useState(""); const [confirm,setConfirm]=useState(null);
+  const handleSave=()=>{ const name=newName.trim(); if(!name||!currentRows.length)return; onSave(name); setNewName(""); setMode("load"); };
   return (
-    <div onClick={e=>e.target===e.currentTarget&&onClose()}
-      style={{ position:"fixed", inset:0, background:"rgba(5,5,20,0.75)", zIndex:200, display:"flex", alignItems:"flex-end", justifyContent:"center", backdropFilter:"blur(4px)" }}>
+    <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{ position:"fixed", inset:0, background:"rgba(5,5,20,0.75)", zIndex:200, display:"flex", alignItems:"flex-end", justifyContent:"center", backdropFilter:"blur(4px)" }}>
       <div style={{ width:"100%", maxWidth:640, background:"linear-gradient(160deg,#12122a,#0d1a2a)", borderRadius:"20px 20px 0 0", padding:"24px 20px 44px", maxHeight:"80vh", overflowY:"auto", boxShadow:"0 -8px 40px rgba(0,0,0,0.5)", animation:"slideUp .3s ease" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
           <h2 style={{ fontSize:17, fontWeight:800, color:"#fff" }}>👥 멤버 프리셋</h2>
@@ -248,88 +201,65 @@ function PresetModal({ presets, currentRows, onSave, onLoad, onDelete, onClose }
             <button key={k} onClick={()=>setMode(k)} style={{ flex:1, padding:"8px", borderRadius:8, border:"none", fontSize:12, fontWeight:700, fontFamily:"inherit", background:mode===k?"linear-gradient(135deg,#6c63ff,#4a9eff)":"transparent", color:mode===k?"#fff":"#6060a0", cursor:"pointer" }}>{l}</button>
           ))}
         </div>
-
         {mode==="save"&&(
           <div>
-            <p style={{ fontSize:12, color:"#5060a0", marginBottom:12 }}>
-              현재 멤버 {currentRows.length}명의 이름과 참여 상태를 저장해요.<br/>
-              <span style={{ color:"#404060" }}>메뉴 내용은 저장되지 않아요.</span>
-            </p>
+            <p style={{ fontSize:12, color:"#5060a0", marginBottom:12 }}>현재 멤버 {currentRows.length}명의 이름과 참여 상태를 저장해요.<br/><span style={{ color:"#404060" }}>메뉴 내용은 저장되지 않아요.</span></p>
             <div style={{ background:"rgba(255,255,255,0.03)", borderRadius:12, padding:"12px 14px", marginBottom:14 }}>
-              {currentRows.length===0
-                ? <div style={{ fontSize:12, color:"#404060", textAlign:"center" }}>현재 멤버가 없어요.</div>
-                : currentRows.map(r=>(
-                    <div key={r.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 0", borderBottom:"1px solid rgba(255,255,255,0.04)" }}>
-                      <span style={{ fontSize:12, color:r.active?"#6c63ff":"#404060" }}>{r.active?"●":"○"}</span>
-                      <span style={{ fontSize:13, color:r.active?"#c8c8e8":"#606080", textDecoration:r.active?"none":"line-through" }}>{r.name||"(이름 없음)"}</span>
-                      <span style={{ fontSize:11, color:"#404060", marginLeft:"auto" }}>{r.active?"참여":"제외"}</span>
-                    </div>
-                  ))
+              {currentRows.length===0?<div style={{ fontSize:12, color:"#404060", textAlign:"center" }}>현재 멤버가 없어요.</div>
+                :currentRows.map(r=>(<div key={r.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 0", borderBottom:"1px solid rgba(255,255,255,0.04)" }}>
+                  <span style={{ fontSize:12, color:r.active?"#6c63ff":"#404060" }}>{r.active?"●":"○"}</span>
+                  <span style={{ fontSize:13, color:r.active?"#c8c8e8":"#606080", textDecoration:r.active?"none":"line-through" }}>{r.name||"(이름 없음)"}</span>
+                  <span style={{ fontSize:11, color:"#404060", marginLeft:"auto" }}>{r.active?"참여":"제외"}</span>
+                </div>))
               }
             </div>
             <div style={{ display:"flex", gap:8 }}>
-              <input value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleSave()}
-                placeholder="프리셋 이름 (예: 아침팀, 점심팀)"
+              <input value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleSave()} placeholder="프리셋 이름 (예: 아침팀, 점심팀)"
                 style={{ flex:1, padding:"12px 14px", background:"rgba(255,255,255,0.06)", border:"1px solid rgba(108,99,255,0.25)", borderRadius:10, fontSize:13, color:"#fff", outline:"none", fontFamily:"inherit" }}/>
-              <button onClick={handleSave} disabled={!newName.trim()||currentRows.length===0}
-                style={{ padding:"12px 18px", borderRadius:10, border:"none", background:newName.trim()&&currentRows.length>0?"linear-gradient(135deg,#6c63ff,#4a9eff)":"rgba(255,255,255,0.06)", color:newName.trim()&&currentRows.length>0?"#fff":"#404060", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>저장</button>
+              <button onClick={handleSave} style={{ padding:"12px 18px", borderRadius:10, border:"none", background:newName.trim()&&currentRows.length>0?"linear-gradient(135deg,#6c63ff,#4a9eff)":"rgba(255,255,255,0.06)", color:newName.trim()&&currentRows.length>0?"#fff":"#404060", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>저장</button>
             </div>
           </div>
         )}
-
         {mode==="load"&&(
-          <div>
-            {presets.length===0
-              ? <div style={{ textAlign:"center", padding:"40px 20px", color:"#404060" }}>
-                  <div style={{ fontSize:32, marginBottom:12 }}>📭</div>
-                  <div style={{ fontSize:13 }}>저장된 프리셋이 없어요</div>
-                </div>
-              : presets.map(p=>(
-                  <div key={p.id} style={{ background:"rgba(255,255,255,0.04)", border:"1px solid rgba(108,99,255,0.15)", borderRadius:14, padding:"14px 16px", marginBottom:8 }}>
-                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-                      <div>
-                        <div style={{ fontSize:14, fontWeight:700, color:"#e0e0ff" }}>{p.name}</div>
-                        <div style={{ fontSize:11, color:"#404060", marginTop:2 }}>
-                          {p.members.filter(m=>m.active).length}명 참여 · {p.members.filter(m=>!m.active).length}명 제외 · {p.savedAt}
-                        </div>
-                      </div>
-                      {confirm===p.id
-                        ? <div style={{ display:"flex", gap:6 }}>
-                            <button onClick={()=>setConfirm(null)} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid rgba(255,255,255,0.1)", background:"transparent", color:"#808099", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>취소</button>
-                            <button onClick={()=>{onDelete(p.id);setConfirm(null);}} style={{ padding:"5px 10px", borderRadius:8, border:"none", background:"rgba(255,80,80,0.2)", color:"#ff8090", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>삭제</button>
-                          </div>
-                        : <button onClick={()=>setConfirm(p.id)} style={{ background:"none", border:"none", color:"#404060", fontSize:18, cursor:"pointer" }}>🗑</button>
-                      }
-                    </div>
-                    <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:12 }}>
-                      {p.members.map((m,i)=>(
-                        <span key={i} style={{ fontSize:11, padding:"3px 10px", borderRadius:10, background:m.active?"rgba(108,99,255,0.15)":"rgba(255,255,255,0.04)", color:m.active?"#a09aff":"#505070", textDecoration:m.active?"none":"line-through" }}>{m.name}</span>
-                      ))}
-                    </div>
-                    <button onClick={()=>{onLoad(p);onClose();}}
-                      style={{ width:"100%", padding:"10px", borderRadius:10, border:"none", background:"linear-gradient(135deg,rgba(108,99,255,0.3),rgba(72,198,239,0.2))", color:"#a09aff", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
-                      📂 이 프리셋으로 불러오기
-                    </button>
+          presets.length===0
+            ?<div style={{ textAlign:"center", padding:"40px 20px", color:"#404060" }}><div style={{ fontSize:32, marginBottom:12 }}>📭</div><div style={{ fontSize:13 }}>저장된 프리셋이 없어요</div></div>
+            :presets.map(p=>(
+              <div key={p.id} style={{ background:"rgba(255,255,255,0.04)", border:"1px solid rgba(108,99,255,0.15)", borderRadius:14, padding:"14px 16px", marginBottom:8 }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                  <div>
+                    <div style={{ fontSize:14, fontWeight:700, color:"#e0e0ff" }}>{p.name}</div>
+                    <div style={{ fontSize:11, color:"#404060", marginTop:2 }}>{p.members?.filter(m=>m.active).length}명 참여 · {p.savedAt}</div>
                   </div>
-                ))
-            }
-          </div>
+                  {confirm===p.id
+                    ?<div style={{ display:"flex", gap:6 }}>
+                      <button onClick={()=>setConfirm(null)} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid rgba(255,255,255,0.1)", background:"transparent", color:"#808099", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>취소</button>
+                      <button onClick={()=>{onDelete(p.id);setConfirm(null);}} style={{ padding:"5px 10px", borderRadius:8, border:"none", background:"rgba(255,80,80,0.2)", color:"#ff8090", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>삭제</button>
+                    </div>
+                    :<button onClick={()=>setConfirm(p.id)} style={{ background:"none", border:"none", color:"#404060", fontSize:18, cursor:"pointer" }}>🗑</button>
+                  }
+                </div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:12 }}>
+                  {p.members?.map((m,i)=>(<span key={i} style={{ fontSize:11, padding:"3px 10px", borderRadius:10, background:m.active?"rgba(108,99,255,0.15)":"rgba(255,255,255,0.04)", color:m.active?"#a09aff":"#505070", textDecoration:m.active?"none":"line-through" }}>{m.name}</span>))}
+                </div>
+                <button onClick={()=>{onLoad(p);onClose();}} style={{ width:"100%", padding:"10px", borderRadius:10, border:"none", background:"linear-gradient(135deg,rgba(108,99,255,0.3),rgba(72,198,239,0.2))", color:"#a09aff", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>📂 이 프리셋으로 불러오기</button>
+              </div>
+            ))
         )}
       </div>
     </div>
   );
 }
 
-// ── Chart helpers ─────────────────────────────────────────────────────────────
+// ── Charts ────────────────────────────────────────────────────────────────────
 function BarChart({ data, labelKey, valueKey, color="#6c63ff", height=180 }) {
   if (!data.length) return <div style={{ textAlign:"center", padding:40, color:"#404060", fontSize:13 }}>데이터가 없어요</div>;
-  const max = Math.max(...data.map(d=>d[valueKey]),1);
-  const bw  = Math.max(24, Math.min(56, Math.floor(320/data.length)-8));
+  const max=Math.max(...data.map(d=>d[valueKey]),1);
+  const bw=Math.max(24,Math.min(56,Math.floor(320/data.length)-8));
   return (
     <div style={{ overflowX:"auto", paddingBottom:4 }}>
       <div style={{ display:"flex", alignItems:"flex-end", gap:6, minWidth:data.length*(bw+6), padding:"0 4px" }}>
         {data.map((d,i)=>{
-          const barH = Math.max(4, Math.round((d[valueKey]/max)*height));
+          const barH=Math.max(4,Math.round((d[valueKey]/max)*height));
           return (
             <div key={i} style={{ display:"flex", flexDirection:"column", alignItems:"center", flex:1, minWidth:bw }}>
               <div style={{ fontSize:11, color:"#a09aff", fontWeight:700, marginBottom:3 }}>{d[valueKey]}</div>
@@ -345,49 +275,54 @@ function BarChart({ data, labelKey, valueKey, color="#6c63ff", height=180 }) {
   );
 }
 function HBar({ label, value, max, color, rank }) {
-  const pct = max ? (value/max)*100 : 0;
   return (
     <div style={{ marginBottom:8 }}>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
         <span style={{ fontSize:13, color:"#c8c8e8", display:"flex", alignItems:"center", gap:6 }}>
-          <span style={{ fontSize:10, color:rank===0?"#f0d050":rank===1?"#b0b0c0":rank===2?"#c08050":"#404060", fontWeight:800, minWidth:16 }}>#{rank+1}</span>
-          {label}
+          <span style={{ fontSize:10, color:rank===0?"#f0d050":rank===1?"#b0b0c0":rank===2?"#c08050":"#404060", fontWeight:800, minWidth:16 }}>#{rank+1}</span>{label}
         </span>
         <span style={{ fontSize:13, fontWeight:700, color }}>{value}회</span>
       </div>
       <div style={{ height:8, background:"rgba(255,255,255,0.05)", borderRadius:4, overflow:"hidden" }}>
-        <div style={{ height:"100%", width:`${pct}%`, background:`linear-gradient(90deg,${color},${color}88)`, borderRadius:4, transition:"width .5s ease" }}/>
+        <div style={{ height:"100%", width:`${max?(value/max)*100:0}%`, background:`linear-gradient(90deg,${color},${color}88)`, borderRadius:4, transition:"width .5s ease" }}/>
       </div>
+    </div>
+  );
+}
+
+// ── Loading screen ────────────────────────────────────────────────────────────
+function Loading() {
+  return (
+    <div style={{ minHeight:"100vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", background:"linear-gradient(135deg,#0d0d1a,#12122a,#0d1a2a)", gap:16 }}>
+      <div style={{ fontSize:36 }}>☕</div>
+      <div style={{ fontSize:13, color:"#5050a0" }}>데이터 불러오는 중...</div>
     </div>
   );
 }
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 export default function App() {
-  const [authed,    setAuthed]    = useState(() => localStorage.getItem(LS_AUTH) === "ok");
-  const [rows,      setRows]      = useState(() => load(LS_ROWS,    []));
-  const [archive,   setArchive]   = useState(() => load(LS_ARCHIVE, []));
-  const [presets,   setPresets]   = useState(() => load(LS_PRESETS, []));
-  const [view,      setView]      = useState("order");
-  const [toast,     setToast]     = useState(null);
-  const [showPreset,setShowPreset]= useState(false);
-  const [statMode,  setStatMode]  = useState("monthly");
-  const [statYear,  setStatYear]  = useState(() => new Date().getFullYear());
-  const [selPerson, setSelPerson] = useState(null);
+  const [authed, setAuthed] = useState(() => localStorage.getItem(LS_AUTH) === "ok");
 
-  // drag state
-  const dragIdx  = useRef(null);
-  const overIdx  = useRef(null);
+  // Firestore 실시간 구독
+  const [rows,    rowsReady]    = useFireCollection(rowsCol,    "order");
+  const [archive, archiveReady] = useFireCollection(archiveCol, "order");
+  const [presets, presetsReady] = useFireCollection(presetsCol, "order");
+
+  const [view,       setView]       = useState("order");
+  const [toast,      setToast]      = useState(null);
+  const [showPreset, setShowPreset] = useState(false);
+  const [statMode,   setStatMode]   = useState("monthly");
+  const [statYear,   setStatYear]   = useState(() => new Date().getFullYear());
+  const [selPerson,  setSelPerson]  = useState(null);
+
+  // drag
+  const dragIdx = useRef(null); const overIdx = useRef(null);
   const [draggingIdx, setDraggingIdx] = useState(null);
   const [overIndex,   setOverIndex]   = useState(null);
 
   const toastRef = useRef(null);
-
-  useEffect(() => store(LS_ROWS,    rows),    [rows]);
-  useEffect(() => store(LS_ARCHIVE, archive), [archive]);
-  useEffect(() => store(LS_PRESETS, presets), [presets]);
-
-  const showToast = msg => { setToast(msg); clearTimeout(toastRef.current); toastRef.current = setTimeout(()=>setToast(null), 2400); };
+  const showToast = msg => { setToast(msg); clearTimeout(toastRef.current); toastRef.current=setTimeout(()=>setToast(null),2400); };
   const logout    = () => { localStorage.removeItem(LS_AUTH); setAuthed(false); };
 
   const opts        = menuList(rows);
@@ -395,45 +330,81 @@ export default function App() {
   const activeCount = rows.filter(r=>r.active).length;
   const totalOrdered= rows.filter(r=>r.active&&r.menu?.trim()&&r.menu!=="없음").length;
 
-  const updateRow = useCallback((id,patch)=>setRows(prev=>prev.map(r=>r.id===id?{...r,...patch}:r)),[]);
-  const addRow    = ()=>setRows(prev=>[...prev,{id:uid(),name:"",menu:"",active:true}]);
-  const deleteRow = id=>{setRows(prev=>prev.filter(r=>r.id!==id));showToast("삭제됐어요 🗑");};
-  const resetRows = ()=>{if(window.confirm("현재 주문을 초기화할까요?\n(프리셋·아카이브는 유지됩니다)")){setRows([]);showToast("초기화 완료!");}};
+  // ── Firestore CRUD ────────────────────────────────────────────────────────
+  const updateRow = useCallback(async (id, patch) => {
+    const current = rows.find(r=>r.id===id);
+    if (!current) return;
+    await setDoc(doc(db,"rows",id), { ...current, ...patch }, { merge:true });
+  }, [rows]);
 
-  // ── drag handlers ──────────────────────────────────────────────────────────
-  const handleDragStart = useCallback(idx => { dragIdx.current = idx; setDraggingIdx(idx); }, []);
-  const handleDragEnter = useCallback(idx => { overIdx.current = idx; setOverIndex(idx); }, []);
-  const handleDragEnd   = useCallback(() => {
-    const from = dragIdx.current;
-    const to   = overIdx.current;
-    if (from !== null && to !== null && from !== to) {
-      setRows(prev => {
-        const next = [...prev];
-        const [moved] = next.splice(from, 1);
-        next.splice(to, 0, moved);
-        return next;
-      });
-    }
-    dragIdx.current = null; overIdx.current = null;
-    setDraggingIdx(null); setOverIndex(null);
-  }, []);
-
-  // ── preset ────────────────────────────────────────────────────────────────
-  const savePreset = name => {
-    const p = { id:uid(), name, savedAt:new Date().toISOString().slice(0,10), members:rows.map(r=>({name:r.name,active:r.active})) };
-    setPresets(prev=>[p,...prev]); showToast(`💾 '${name}' 프리셋 저장 완료!`);
+  const addRow = async () => {
+    const id = uid();
+    await setDoc(doc(db,"rows",id), { id, name:"", menu:"", active:true, order: Date.now() });
   };
-  const loadPreset  = p => { setRows(p.members.map(m=>({id:uid(),name:m.name,menu:"",active:m.active}))); showToast(`📂 '${p.name}' 불러왔어요!`); };
-  const deletePreset= id=>{ setPresets(prev=>prev.filter(p=>p.id!==id)); showToast("프리셋 삭제됐어요"); };
 
-  // ── confirm order ─────────────────────────────────────────────────────────
-  const confirmOrder = () => {
-    const active = rows.filter(r=>r.active&&r.menu?.trim()&&r.menu!=="없음");
+  const deleteRow = async id => {
+    await deleteDoc(doc(db,"rows",id));
+    showToast("삭제됐어요 🗑");
+  };
+
+  const resetRows = async () => {
+    if (!window.confirm("현재 주문을 초기화할까요?\n(프리셋·아카이브는 유지됩니다)")) return;
+    await Promise.all(rows.map(r => deleteDoc(doc(db,"rows",r.id))));
+    showToast("초기화 완료!");
+  };
+
+  // ── 드래그 정렬 ──────────────────────────────────────────────────────────
+  const handleDragStart = useCallback(idx => { dragIdx.current=idx; setDraggingIdx(idx); }, []);
+  const handleDragEnter = useCallback(idx => { overIdx.current=idx; setOverIndex(idx); }, []);
+  const handleDragEnd   = useCallback(async () => {
+    const from=dragIdx.current, to=overIdx.current;
+    if (from!==null&&to!==null&&from!==to) {
+      const next=[...rows];
+      const [moved]=next.splice(from,1);
+      next.splice(to,0,moved);
+      // order 값 재할당
+      await Promise.all(next.map((r,i) => setDoc(doc(db,"rows",r.id), {...r, order:i}, {merge:true})));
+    }
+    dragIdx.current=null; overIdx.current=null;
+    setDraggingIdx(null); setOverIndex(null);
+  }, [rows]);
+
+  // ── 프리셋 ───────────────────────────────────────────────────────────────
+  const savePreset = async name => {
+    const id = uid();
+    await setDoc(doc(db,"presets",id), { id, name, savedAt:new Date().toISOString().slice(0,10), members:rows.map(r=>({name:r.name,active:r.active})), order:Date.now() });
+    showToast(`💾 '${name}' 프리셋 저장 완료!`);
+  };
+
+  const loadPreset = async preset => {
+    // 기존 rows 전체 삭제 후 프리셋 멤버로 교체
+    await Promise.all(rows.map(r=>deleteDoc(doc(db,"rows",r.id))));
+    await Promise.all(preset.members.map((m,i) => {
+      const id=uid();
+      return setDoc(doc(db,"rows",id), {id, name:m.name, menu:"", active:m.active, order:i});
+    }));
+    showToast(`📂 '${preset.name}' 불러왔어요!`);
+  };
+
+  const deletePreset = async id => {
+    await deleteDoc(doc(db,"presets",id));
+    showToast("프리셋 삭제됐어요");
+  };
+
+  // ── 주문 확정 ─────────────────────────────────────────────────────────────
+  const confirmOrder = async () => {
+    const active=rows.filter(r=>r.active&&r.menu?.trim()&&r.menu!=="없음");
     if (!active.length){showToast("확정할 주문이 없어요 😅");return;}
     if (!window.confirm(`총 ${active.length}건을 오늘 날짜로 확정할까요?`))return;
-    const now = new Date();
-    const entry = { id:uid(), date:now.toISOString().slice(0,10), year:now.getFullYear(), month:now.getMonth()+1, orders:active.map(r=>({name:r.name,menu:r.menu.trim()})) };
-    setArchive(prev=>[entry,...prev]); showToast(`✅ ${active.length}건 저장됐어요!`);
+    const now=new Date();
+    const id=uid();
+    await setDoc(doc(db,"archive",id), {
+      id, date:now.toISOString().slice(0,10),
+      year:now.getFullYear(), month:now.getMonth()+1,
+      orders:active.map(r=>({name:r.name,menu:r.menu.trim()})),
+      order: Date.now(),
+    });
+    showToast(`✅ ${active.length}건 저장됐어요!`);
   };
 
   const copyText = () => {
@@ -442,16 +413,17 @@ export default function App() {
     navigator.clipboard.writeText(lines.join("\n")).then(()=>showToast("클립보드에 복사됐어요! 📋"));
   };
 
-  // ── stats ─────────────────────────────────────────────────────────────────
-  const years = useMemo(()=>[...new Set(archive.map(e=>e.year))].sort((a,b)=>b-a),[archive]);
-  const monthlyData = useMemo(()=>{const map={};archive.filter(e=>e.year===statYear).forEach(e=>{map[e.month]=(map[e.month]||0)+e.orders.length;});return Array.from({length:12},(_,i)=>({label:`${i+1}월`,value:map[i+1]||0}));},[archive,statYear]);
-  const yearlyData  = useMemo(()=>{const map={};archive.forEach(e=>{map[e.year]=(map[e.year]||0)+e.orders.length;});return Object.entries(map).sort((a,b)=>a[0]-b[0]).map(([y,v])=>({label:`${y}년`,value:v}));},[archive]);
-  const allMenuStats= useMemo(()=>{const map={};archive.forEach(e=>e.orders.forEach(o=>{map[o.menu]=(map[o.menu]||0)+1;}));return Object.entries(map).sort((a,b)=>b[1]-a[1]).slice(0,10);},[archive]);
-  const persons     = useMemo(()=>[...new Set(archive.flatMap(e=>e.orders.map(o=>o.name)))].sort((a,b)=>a.localeCompare(b,"ko")),[archive]);
-  const personStats = useMemo(()=>{if(!selPerson)return[];const map={};archive.forEach(e=>e.orders.filter(o=>o.name===selPerson).forEach(o=>{map[o.menu]=(map[o.menu]||0)+1;}));return Object.entries(map).sort((a,b)=>b[1]-a[1]);},[archive,selPerson]);
+  // ── 통계 ─────────────────────────────────────────────────────────────────
+  const years=useMemo(()=>[...new Set(archive.map(e=>e.year))].sort((a,b)=>b-a),[archive]);
+  const monthlyData=useMemo(()=>{const map={};archive.filter(e=>e.year===statYear).forEach(e=>{map[e.month]=(map[e.month]||0)+e.orders.length;});return Array.from({length:12},(_,i)=>({label:`${i+1}월`,value:map[i+1]||0}));},[archive,statYear]);
+  const yearlyData=useMemo(()=>{const map={};archive.forEach(e=>{map[e.year]=(map[e.year]||0)+e.orders.length;});return Object.entries(map).sort((a,b)=>a[0]-b[0]).map(([y,v])=>({label:`${y}년`,value:v}));},[archive]);
+  const allMenuStats=useMemo(()=>{const map={};archive.forEach(e=>e.orders.forEach(o=>{map[o.menu]=(map[o.menu]||0)+1;}));return Object.entries(map).sort((a,b)=>b[1]-a[1]).slice(0,10);},[archive]);
+  const persons=useMemo(()=>[...new Set(archive.flatMap(e=>e.orders.map(o=>o.name)))].sort((a,b)=>a.localeCompare(b,"ko")),[archive]);
+  const personStats=useMemo(()=>{if(!selPerson)return[];const map={};archive.forEach(e=>e.orders.filter(o=>o.name===selPerson).forEach(o=>{map[o.menu]=(map[o.menu]||0)+1;}));return Object.entries(map).sort((a,b)=>b[1]-a[1]);},[archive,selPerson]);
   const personMonthly=useMemo(()=>{if(!selPerson)return[];const map={};archive.forEach(e=>{if(e.year!==statYear)return;const cnt=e.orders.filter(o=>o.name===selPerson).length;if(cnt)map[e.month]=(map[e.month]||0)+cnt;});return Array.from({length:12},(_,i)=>({label:`${i+1}월`,value:map[i+1]||0}));},[archive,selPerson,statYear]);
 
   if (!authed) return <PasswordGate onUnlock={()=>setAuthed(true)}/>;
+  if (!rowsReady||!archiveReady||!presetsReady) return <Loading/>;
 
   const TABS=[["order","📝 입력"],["summary","📊 요약"],["stats","📈 통계"]];
 
@@ -481,12 +453,9 @@ export default function App() {
       </div>
 
       {toast&&<div style={{ position:"fixed", top:20, right:20, zIndex:9999, background:"#2d2d4a", border:"1px solid #6c63ff44", borderRadius:12, padding:"10px 18px", fontSize:13, color:"#c8c8ff", boxShadow:"0 4px 24px rgba(0,0,0,0.4)", animation:"toastIn .25s ease" }}>{toast}</div>}
-
       {showPreset&&<PresetModal presets={presets} currentRows={rows} onSave={savePreset} onLoad={loadPreset} onDelete={deletePreset} onClose={()=>setShowPreset(false)}/>}
 
       <div style={{ maxWidth:640, margin:"0 auto", padding:"0 16px 100px", position:"relative", zIndex:1 }}>
-
-        {/* 헤더 */}
         <header style={{ padding:"28px 0 16px" }}>
           <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:12 }}>
             <div>
@@ -515,73 +484,45 @@ export default function App() {
         {/* ══ 주문 입력 ══ */}
         {view==="order"&&(
           <div style={{ animation:"fadeIn .3s ease" }}>
-            {/* 프리셋 바 */}
             <div style={{ display:"flex", gap:8, marginBottom:16, alignItems:"center" }}>
               <button className="abtn" onClick={()=>setShowPreset(true)}
                 style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 14px", borderRadius:10, border:"1px solid rgba(108,99,255,0.25)", background:"rgba(108,99,255,0.08)", color:"#8080cc", fontSize:12, fontWeight:700, fontFamily:"inherit", flexShrink:0 }}>
-                👥 프리셋
-                {presets.length>0&&<span style={{ background:"rgba(108,99,255,0.3)", color:"#a09aff", borderRadius:10, padding:"1px 7px", fontSize:10 }}>{presets.length}</span>}
+                👥 프리셋{presets.length>0&&<span style={{ background:"rgba(108,99,255,0.3)", color:"#a09aff", borderRadius:10, padding:"1px 7px", fontSize:10 }}>{presets.length}</span>}
               </button>
               {presets.length>0&&(
                 <div style={{ display:"flex", gap:5, overflowX:"auto", flex:1 }}>
                   {presets.slice(0,3).map(p=>(
-                    <button key={p.id} className="chip" onClick={()=>loadPreset(p)}
-                      style={{ flexShrink:0, padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,0.08)", background:"rgba(255,255,255,0.04)", color:"#7070a0", fontSize:11, fontWeight:600, fontFamily:"inherit", whiteSpace:"nowrap" }}>
-                      ↩ {p.name}
-                    </button>
+                    <button key={p.id} className="chip" onClick={()=>loadPreset(p)} style={{ flexShrink:0, padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,0.08)", background:"rgba(255,255,255,0.04)", color:"#7070a0", fontSize:11, fontWeight:600, fontFamily:"inherit", whiteSpace:"nowrap" }}>↩ {p.name}</button>
                   ))}
                 </div>
               )}
             </div>
-
-            {/* 컬럼 헤더 */}
             {rows.length>0&&(
               <div style={{ display:"grid", gridTemplateColumns:"22px 38px 1fr 1fr", gap:8, padding:"0 12px 8px", fontSize:10, letterSpacing:"1px", textTransform:"uppercase", color:"#5050a0" }}>
-                <div></div><div>ON</div><div>이름</div><div>메뉴</div>
+                <div/><div>ON</div><div>이름</div><div>메뉴</div>
               </div>
             )}
-
-            {/* 힌트 */}
-            {rows.length>1&&(
-              <div style={{ fontSize:11, color:"#3a3a6a", textAlign:"center", marginBottom:8 }}>
-                ☰ 길게 눌러 드래그 정렬 &nbsp;|&nbsp; ← 스와이프해서 삭제
-              </div>
-            )}
-
+            {rows.length>1&&<div style={{ fontSize:11, color:"#3a3a6a", textAlign:"center", marginBottom:8 }}>☰ 길게 눌러 드래그 정렬 &nbsp;|&nbsp; ← 스와이프해서 삭제</div>}
             {rows.length===0
-              ? <div style={{ textAlign:"center", padding:"40px 20px", color:"#303050", lineHeight:2 }}>
-                  <div style={{ fontSize:36, marginBottom:12 }}>📋</div>
-                  <div style={{ fontSize:14 }}>아직 참여자가 없어요</div>
-                  <div style={{ fontSize:12, color:"#252540" }}>프리셋을 불러오거나 직접 추가해보세요</div>
-                </div>
-              : <div>
-                  {rows.map((row, idx)=>(
-                    <SwipeRow
-                      key={row.id}
-                      row={row} idx={idx}
-                      onUpdate={updateRow}
-                      onDelete={deleteRow}
-                      onDragStart={handleDragStart}
-                      onDragEnter={handleDragEnter}
-                      onDragEnd={handleDragEnd}
-                      isDragging={draggingIdx===idx}
-                      isOver={overIndex===idx&&draggingIdx!==idx}
-                      menuOptions={opts}
-                    />
-                  ))}
-                </div>
+              ?<div style={{ textAlign:"center", padding:"40px 20px", color:"#303050", lineHeight:2 }}>
+                <div style={{ fontSize:36, marginBottom:12 }}>📋</div>
+                <div style={{ fontSize:14 }}>아직 참여자가 없어요</div>
+                <div style={{ fontSize:12, color:"#252540" }}>프리셋을 불러오거나 직접 추가해보세요</div>
+              </div>
+              :<div>
+                {rows.map((row,idx)=>(
+                  <SwipeRow key={row.id} row={row} idx={idx} onUpdate={updateRow} onDelete={deleteRow}
+                    onDragStart={handleDragStart} onDragEnter={handleDragEnter} onDragEnd={handleDragEnd}
+                    isDragging={draggingIdx===idx} isOver={overIndex===idx&&draggingIdx!==idx} menuOptions={opts}/>
+                ))}
+              </div>
             }
-
-            <button className="abtn" onClick={addRow} style={{ width:"100%", marginTop:4, padding:"12px", background:"rgba(108,99,255,0.08)", border:"1.5px dashed rgba(108,99,255,0.3)", borderRadius:12, color:"#6c63ff", fontSize:14, fontWeight:700, fontFamily:"inherit" }}>
-              + 참여자 추가
-            </button>
+            <button className="abtn" onClick={addRow} style={{ width:"100%", marginTop:4, padding:"12px", background:"rgba(108,99,255,0.08)", border:"1.5px dashed rgba(108,99,255,0.3)", borderRadius:12, color:"#6c63ff", fontSize:14, fontWeight:700, fontFamily:"inherit" }}>+ 참여자 추가</button>
             <div style={{ display:"flex", gap:8, marginTop:10 }}>
               <button className="abtn" onClick={resetRows} style={{ flex:1, padding:"11px", borderRadius:10, border:"1px solid rgba(255,80,80,0.2)", background:"rgba(255,80,80,0.06)", color:"#ff8090", fontSize:12, fontWeight:600, fontFamily:"inherit" }}>↺ 초기화</button>
               <button className="abtn" onClick={()=>setView("summary")} style={{ flex:2, padding:"11px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#6c63ff,#4a9eff)", color:"#fff", fontSize:12, fontWeight:700, fontFamily:"inherit", boxShadow:"0 4px 16px rgba(108,99,255,0.3)" }}>📊 요약 보기 →</button>
             </div>
-            <button className="abtn" onClick={confirmOrder} style={{ width:"100%", marginTop:8, padding:"15px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#f0a050,#e07030)", color:"#fff", fontSize:15, fontWeight:800, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(240,140,60,0.35)" }}>
-              ✅ 주문 확정 & 아카이브 저장
-            </button>
+            <button className="abtn" onClick={confirmOrder} style={{ width:"100%", marginTop:8, padding:"15px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#f0a050,#e07030)", color:"#fff", fontSize:15, fontWeight:800, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(240,140,60,0.35)" }}>✅ 주문 확정 & 아카이브 저장</button>
           </div>
         )}
 
@@ -616,12 +557,10 @@ export default function App() {
             <button className="abtn" onClick={confirmOrder} style={{ width:"100%", padding:"14px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#f0a050,#e07030)", color:"#fff", fontSize:14, fontWeight:700, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(240,140,60,0.3)" }}>✅ 주문 확정 & 아카이브 저장</button>
             <div style={{ fontSize:10, letterSpacing:"1.5px", textTransform:"uppercase", color:"#5050a0", margin:"18px 0 8px" }}>개인별 목록</div>
             <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-              {rows.map(r=>(
-                <div key={r.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 14px", borderRadius:10, background:r.active?"rgba(255,255,255,0.03)":"transparent", opacity:r.active?1:0.35 }}>
-                  <span style={{ fontSize:13, fontWeight:600, color:"#c0c0e0", textDecoration:r.active?"none":"line-through", minWidth:72 }}>{r.name||"—"}</span>
-                  <span style={{ fontSize:12, color:r.menu&&r.menu!=="없음"?"#8080cc":"#404060", textAlign:"right", maxWidth:"60%" }}>{r.menu||"—"}</span>
-                </div>
-              ))}
+              {rows.map(r=>(<div key={r.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 14px", borderRadius:10, background:r.active?"rgba(255,255,255,0.03)":"transparent", opacity:r.active?1:0.35 }}>
+                <span style={{ fontSize:13, fontWeight:600, color:"#c0c0e0", textDecoration:r.active?"none":"line-through", minWidth:72 }}>{r.name||"—"}</span>
+                <span style={{ fontSize:12, color:r.menu&&r.menu!=="없음"?"#8080cc":"#404060", textAlign:"right", maxWidth:"60%" }}>{r.menu||"—"}</span>
+              </div>))}
             </div>
           </div>
         )}
@@ -637,15 +576,13 @@ export default function App() {
               </div>
               :<>
                 <div style={{ display:"flex", gap:6, marginBottom:20 }}>
-                  {[["monthly","📅 월별"],["yearly","📆 연별"],["person","🧑 사람별"]].map(([k,l])=>(
-                    <button key={k} className="chip" onClick={()=>setStatMode(k)} style={{ padding:"7px 14px", borderRadius:20, border:"none", fontSize:12, fontWeight:700, fontFamily:"inherit", background:statMode===k?"linear-gradient(135deg,#6c63ff,#4a9eff)":"rgba(255,255,255,0.06)", color:statMode===k?"#fff":"#6060a0", boxShadow:statMode===k?"0 2px 12px rgba(108,99,255,0.3)":"none" }}>{l}</button>
+                  {[["monthly","📅 월별"],["yearly","📆 연별"],["person","🧑 사람별"],["log","📋 기록"]].map(([k,l])=>(
+                    <button key={k} className="chip" onClick={()=>setStatMode(k)} style={{ padding:"7px 10px", borderRadius:20, border:"none", fontSize:11, fontWeight:700, fontFamily:"inherit", background:statMode===k?"linear-gradient(135deg,#6c63ff,#4a9eff)":"rgba(255,255,255,0.06)", color:statMode===k?"#fff":"#6060a0", boxShadow:statMode===k?"0 2px 12px rgba(108,99,255,0.3)":"none" }}>{l}</button>
                   ))}
                 </div>
                 {(statMode==="monthly"||statMode==="person")&&years.length>0&&(
                   <div style={{ display:"flex", gap:6, marginBottom:16, flexWrap:"wrap" }}>
-                    {years.map(y=>(
-                      <button key={y} className="chip" onClick={()=>setStatYear(y)} style={{ padding:"5px 14px", borderRadius:16, border:"none", fontSize:12, fontWeight:600, fontFamily:"inherit", background:statYear===y?"rgba(108,99,255,0.25)":"rgba(255,255,255,0.05)", color:statYear===y?"#a09aff":"#5060a0" }}>{y}년</button>
-                    ))}
+                    {years.map(y=>(<button key={y} className="chip" onClick={()=>setStatYear(y)} style={{ padding:"5px 14px", borderRadius:16, border:"none", fontSize:12, fontWeight:600, fontFamily:"inherit", background:statYear===y?"rgba(108,99,255,0.25)":"rgba(255,255,255,0.05)", color:statYear===y?"#a09aff":"#5060a0" }}>{y}년</button>))}
                   </div>
                 )}
                 {statMode==="monthly"&&(
@@ -677,9 +614,7 @@ export default function App() {
                     <div style={{ marginBottom:16 }}>
                       <div style={{ fontSize:11, color:"#5060a0", letterSpacing:"1px", marginBottom:10 }}>멤버 선택</div>
                       <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                        {persons.map((p,i)=>(
-                          <button key={p} className="chip" onClick={()=>setSelPerson(p===selPerson?null:p)} style={{ padding:"6px 14px", borderRadius:20, border:"none", fontSize:13, fontWeight:600, fontFamily:"inherit", background:selPerson===p?col(i)+"44":"rgba(255,255,255,0.06)", color:selPerson===p?col(i):"#6060a0", boxShadow:selPerson===p?`0 2px 12px ${col(i)}44`:"none" }}>{p}</button>
-                        ))}
+                        {persons.map((p,i)=>(<button key={p} className="chip" onClick={()=>setSelPerson(p===selPerson?null:p)} style={{ padding:"6px 14px", borderRadius:20, border:"none", fontSize:13, fontWeight:600, fontFamily:"inherit", background:selPerson===p?col(i)+"44":"rgba(255,255,255,0.06)", color:selPerson===p?col(i):"#6060a0", boxShadow:selPerson===p?`0 2px 12px ${col(i)}44`:"none" }}>{p}</button>))}
                       </div>
                     </div>
                     {selPerson
@@ -697,25 +632,27 @@ export default function App() {
                     }
                   </div>
                 )}
-                <div style={{ marginTop:24 }}>
-                  <div style={{ fontSize:11, color:"#5060a0", letterSpacing:"1px", marginBottom:10 }}>아카이브 기록</div>
+                {/* ── 아카이브 기록 탭 (독립) ── */}
+                {statMode==="log"&&(
                   <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                    {archive.slice(0,20).map(entry=>(
-                      <div key={entry.id} style={{ background:"rgba(255,255,255,0.025)", border:"1px solid rgba(255,255,255,0.05)", borderRadius:12, padding:"12px 16px" }}>
-                        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
-                          <span style={{ fontSize:12, color:"#6c63ff", fontWeight:700 }}>{entry.date}</span>
-                          <span style={{ fontSize:11, color:"#5060a0" }}>{entry.orders.length}건</span>
+                    {[...archive].sort((a,b)=>b.order-a.order).map(entry=>(
+                      <div key={entry.id} style={{ background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.06)", borderRadius:12, padding:"14px 16px" }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
+                          <span style={{ fontSize:13, color:"#6c63ff", fontWeight:700 }}>{entry.date}</span>
+                          <span style={{ fontSize:11, color:"#5060a0", background:"rgba(108,99,255,0.1)", padding:"2px 8px", borderRadius:8 }}>{entry.orders.length}건</span>
                         </div>
-                        <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                        <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
                           {entry.orders.map((o,i)=>(
-                            <span key={i} style={{ fontSize:11, padding:"3px 9px", borderRadius:10, background:"rgba(108,99,255,0.1)", color:"#8080cc" }}>{o.name} — {o.menu}</span>
+                            <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:13 }}>
+                              <span style={{ color:"#8080a0", minWidth:60 }}>{o.name}</span>
+                              <span style={{ color:"#c8c8e8", textAlign:"right" }}>{o.menu}</span>
+                            </div>
                           ))}
                         </div>
                       </div>
                     ))}
-                    {archive.length>20&&<div style={{ textAlign:"center", fontSize:12, color:"#404060" }}>외 {archive.length-20}건 더</div>}
                   </div>
-                </div>
+                )}
               </>
             }
           </div>
