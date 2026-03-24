@@ -30,7 +30,7 @@ const getSummary = (rows) => {
   return Object.entries(map).sort((a, b) => b[1] - a[1]);
 };
 
-// ── useFireCol: Firestore 실시간 구독 (orderBy 사용) ─────────────────────────
+// ── useFireCol ────────────────────────────────────────────────────────────────
 function useFireCol(col, orderField = "order") {
   const [docs,  setDocs]  = useState([]);
   const [ready, setReady] = useState(false);
@@ -45,31 +45,21 @@ function useFireCol(col, orderField = "order") {
   return [docs, ready];
 }
 
-// ── useFireColNoOrder: orderBy 없이 구독 (인덱스 불필요) ─────────────────────
+// ── useFireColNoOrder ─────────────────────────────────────────────────────────
 function useFireColNoOrder(col) {
   const [docs,  setDocs]  = useState([]);
   const [ready, setReady] = useState(false);
   useEffect(() => {
-    console.log("🔥 menuHistory 구독 시작");
     const unsub = onSnapshot(col,
-      snap => {
-        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        console.log("🔥 menuHistory 수신:", data.length, "개", data.map(d=>d.name));
-        setDocs(data);
-        setReady(true);
-      },
-      err => {
-        console.error("🔥 menuHistory 에러:", err.code, err.message);
-        setReady(true);
-      }
+      snap => { setDocs(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setReady(true); },
+      err  => { console.error("🔥 구독 에러:", err.code, err.message); setReady(true); }
     );
     return unsub;
   }, []);
   return [docs, ready];
 }
 
-// ── menuHistory Firebase 저장 헬퍼 ───────────────────────────────────────────
-// 메뉴명을 key로 사용 (중복 저장 없음)
+// ── menuHistory 저장 헬퍼 ─────────────────────────────────────────────────────
 const saveMenuHistory = (menu) => {
   const m = menu?.trim();
   if (!m || m === "없음") return;
@@ -77,9 +67,7 @@ const saveMenuHistory = (menu) => {
   setDoc(doc(db, "menuHistory", key), { name: m, order: m }, { merge: true });
 };
 
-// ── MenuInput ─────────────────────────────────────────────────────────────────
-// 텍스트 직접 입력 + ▼ 버튼으로 이전 메뉴 목록 선택
-// onBlur 시 Firebase menuHistory에 저장 → 다음부터 목록에 표시
+// ── MenuInput — 텍스트 입력 + ▼ 드롭다운 + ✓ 확인 버튼 ──────────────────────
 function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, rowStyle }) {
   const [local, setLocal] = useState(value);
   const [open,  setOpen]  = useState(false);
@@ -97,28 +85,28 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
     };
   }, []);
 
-  const pick = v => {
-    setLocal(v);
-    onChange(v);
-    saveMenuHistory(v);
+  const commit = (v) => {
+    const trimmed = v.trim();
+    onChange(trimmed);
+    saveMenuHistory(trimmed);
     setOpen(false);
   };
 
-  // ✅ onBlur 삭제 — Enter 키로만 저장
+  const pick = v => { setLocal(v); commit(v); };
+
+  // Enter 키 또는 ✓ 버튼으로만 확정
   const handleKeyDown = e => {
-    if (e.key === "Enter") {
-      const v = local.trim();
-      onChange(v);
-      saveMenuHistory(v);
-      setOpen(false);
-      e.target.blur();
-    }
+    if (e.key === "Enter") { commit(local); e.target.blur(); }
+  };
+  const handleConfirm = e => {
+    e.preventDefault(); e.stopPropagation();
+    commit(local);
   };
 
   const toggleDrop = e => { e.preventDefault(); e.stopPropagation(); setOpen(o => !o); };
 
   return (
-    <div ref={wrapRef} style={{ display: "flex", alignItems: "center", flex: 1, gap: 4, position: "relative" }}>
+    <div ref={wrapRef} style={{ display: "flex", alignItems: "center", flex: 1, gap: 2, position: "relative" }}>
       <input
         value={local}
         onChange={e => setLocal(e.target.value)}
@@ -126,14 +114,30 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
         placeholder={placeholder}
         style={rowStyle}
       />
-      <button onClick={toggleDrop} style={{
-        flexShrink: 0, background: "none", border: "none",
-        color: open ? "#6c63ff" : "#3a3a6a",
-        fontSize: 13, cursor: "pointer", padding: "2px 6px", lineHeight: 1,
-        transition: "color .15s, transform .2s",
-        transform: open ? "rotate(180deg)" : "rotate(0deg)",
-      }}>▼</button>
 
+      {/* ✓ 확인 버튼 — 모바일 Enter 대체 */}
+      <button
+        onMouseDown={handleConfirm}
+        onTouchEnd={handleConfirm}
+        style={{
+          flexShrink: 0, background: "none", border: "none",
+          color: local.trim() ? "#48c6ef" : "#2a2a4a",
+          fontSize: 15, cursor: "pointer", padding: "2px 3px", lineHeight: 1,
+          transition: "color .15s",
+        }}>✓</button>
+
+      {/* ▼ 드롭다운 버튼 */}
+      <button
+        onClick={toggleDrop}
+        style={{
+          flexShrink: 0, background: "none", border: "none",
+          color: open ? "#6c63ff" : "#3a3a6a",
+          fontSize: 12, cursor: "pointer", padding: "2px 3px", lineHeight: 1,
+          transition: "color .15s, transform .2s",
+          transform: open ? "rotate(180deg)" : "rotate(0deg)",
+        }}>▼</button>
+
+      {/* 드롭다운 목록 */}
       {open && (
         <div style={{
           position: "absolute", top: "calc(100% + 4px)", right: 0,
@@ -145,19 +149,16 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
           {options.length === 0
             ? <div style={{ padding: "16px", fontSize: 12, color: "#606080", textAlign: "center" }}>
                 아직 메뉴 기록이 없어요<br/>
-                <span style={{ fontSize: 11 }}>Enter 키로 입력하면 저장돼요</span>
+                <span style={{ fontSize: 11 }}>✓ 버튼이나 Enter로 입력하면 저장돼요</span>
               </div>
             : options.map((o, i) => (
                 <div key={i} style={{
                   padding: "10px 14px", fontSize: 13, color: "#c8c8e8",
                   borderBottom: "1px solid #2d2d4a33",
-                  display: "flex", alignItems: "center", gap: 8,
-                  whiteSpace: "nowrap",
+                  display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap",
                 }}
                   onMouseEnter={e => e.currentTarget.style.background = "#2d2d4a"}
                   onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  
-                  {/* 메뉴명 — 클릭하면 선택 */}
                   <span style={{ fontSize: 10, color: "#4040a0" }}>▸</span>
                   <span
                     onMouseDown={e => { e.preventDefault(); pick(o); }}
@@ -165,8 +166,7 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
                     style={{ flex: 1, cursor: "pointer" }}>
                     {o}
                   </span>
-
-                  {/* ✅ X 버튼 — Firebase에서 삭제 */}
+                  {/* X 버튼 — Firebase에서 삭제 */}
                   <span
                     onMouseDown={e => {
                       e.preventDefault(); e.stopPropagation();
@@ -188,7 +188,7 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
   );
 }
 
-// ── SwipeRow ──────────────────────────────────────────────────────────────────
+// ── SwipeRow — 스와이프 삭제 + 드래그 + 대체음료 ─────────────────────────────
 function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isOver, menuOptions, onDeleteHistory }) {
   const touch    = useRef(isTouch());
   const startX   = useRef(null); const startY = useRef(null);
@@ -197,6 +197,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
   const [revealed, setRevealed] = useState(false);
   const [swiping,  setSwiping]  = useState(false);
   const [hovered,  setHovered]  = useState(false);
+  const [showSub,  setShowSub]  = useState(!!row.substitute); // 대체음료 입력창 표시
   const THRESHOLD = 76;
 
   const onTouchStart = e => { startX.current = e.touches[0].clientX; startY.current = e.touches[0].clientY; swiped.current = false; setSwiping(false); };
@@ -212,9 +213,9 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
   };
   const onTouchEnd = () => {
     if (!swiped.current) return;
-    if (offsetX < -(THRESHOLD + 15))     { onDelete(row.id); }
-    else if (offsetX < -THRESHOLD / 2)   { setOffsetX(-THRESHOLD); setRevealed(true); }
-    else                                  { setOffsetX(0); setRevealed(false); }
+    if (offsetX < -(THRESHOLD + 15))   { onDelete(row.id); }
+    else if (offsetX < -THRESHOLD / 2) { setOffsetX(-THRESHOLD); setRevealed(true); }
+    else                                { setOffsetX(0); setRevealed(false); }
     setSwiping(false); startX.current = null;
   };
   const closeSwipe = () => { setOffsetX(0); setRevealed(false); };
@@ -246,13 +247,25 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
         </div>
       )}
 
-      {/* 카드 */}
+      {/* 메인 카드 */}
       <div
         onTouchStart={touch.current ? onTouchStart : undefined}
         onTouchMove={touch.current ? onTouchMove : undefined}
         onTouchEnd={touch.current ? onTouchEnd : undefined}
         onClick={revealed ? closeSwipe : undefined}
-        style={{ display: "grid", gridTemplateColumns: touch.current ? "22px 38px 1fr 1fr" : "22px 38px 1fr 1fr 28px", gap: 8, alignItems: "center", background: isOver ? "rgba(108,99,255,0.1)" : row.active ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.015)", border: `1px solid ${bc}`, borderRadius: 12, padding: "10px 12px", opacity: row.active ? 1 : 0.5, transform: `translateX(${offsetX}px)`, transition: swiping ? "none" : "transform .25s ease, border-color .15s", position: "relative", zIndex: 2, overflow: "visible" }}>
+        style={{
+          display: "grid",
+          gridTemplateColumns: touch.current ? "22px 38px 1fr 1fr 28px" : "22px 38px 1fr 1fr 28px 24px",
+          gap: 6, alignItems: "center",
+          background: isOver ? "rgba(108,99,255,0.1)" : row.active ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.015)",
+          border: `1px solid ${bc}`,
+          borderRadius: showSub ? "12px 12px 0 0" : 12,
+          padding: "10px 12px",
+          opacity: row.active ? 1 : 0.5,
+          transform: `translateX(${offsetX}px)`,
+          transition: swiping ? "none" : "transform .25s ease, border-color .15s",
+          position: "relative", zIndex: 2, overflow: "visible",
+        }}>
 
         {/* 드래그 핸들 */}
         <div {...dragProps} style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "center", justifyContent: "center", cursor: "grab", padding: "4px 2px", touchAction: "none" }}>
@@ -279,11 +292,61 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           rowStyle={{ background: "transparent", border: "none", fontSize: 13, color: row.active ? "#a0a0cc" : "#505070", fontFamily: "inherit", width: "100%", textDecoration: row.active ? "none" : "line-through", outline: "none" }}
         />
 
+        {/* 🔄 대체음료 토글 버튼 */}
+        <button
+          onClick={() => setShowSub(s => !s)}
+          title="대체음료 추가"
+          style={{
+            background: "none", border: "none", cursor: "pointer", padding: "2px 3px",
+            fontSize: 14, opacity: showSub ? 1 : 0.3,
+            color: showSub ? "#48c6ef" : "#606080",
+            transition: "opacity .15s, color .15s",
+          }}>🔄</button>
+
         {/* PC 삭제 */}
         {!touch.current && (
           <button onClick={() => onDelete(row.id)} style={{ opacity: hovered ? 1 : 0, background: "none", border: "none", color: "#ff6080", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", transition: "opacity .15s", padding: 0, cursor: "pointer" }}>×</button>
         )}
       </div>
+
+      {/* 대체음료 입력창 */}
+      {showSub && (
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "22px 38px 1fr 1fr 28px" + (!touch.current ? " 24px" : ""),
+          gap: 6, alignItems: "center",
+          background: "rgba(72,198,239,0.05)",
+          border: `1px solid rgba(72,198,239,0.2)`,
+          borderTop: "none",
+          borderRadius: "0 0 12px 12px",
+          padding: "8px 12px",
+          transform: `translateX(${offsetX}px)`,
+          transition: swiping ? "none" : "transform .25s ease",
+        }}>
+          {/* 빈 칸 — 드래그 핸들 자리 */}
+          <div />
+          {/* 대체 아이콘 */}
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", fontSize: 11, color: "#48c6ef", opacity: 0.7 }}>↪</div>
+          {/* 대체음료 라벨 */}
+          <div style={{ fontSize: 11, color: "#48c6ef", opacity: 0.8 }}>대체음료</div>
+          {/* 대체음료 입력 */}
+          <MenuInput
+            value={row.substitute || ""}
+            onChange={v => onUpdate(row.id, { substitute: v })}
+            options={menuOptions}
+            onDeleteHistory={onDeleteHistory}
+            placeholder="대체 메뉴 입력/선택"
+            rowStyle={{ background: "transparent", border: "none", fontSize: 12, color: "#70c8d8", fontFamily: "inherit", width: "100%", outline: "none" }}
+          />
+          {/* 대체음료 삭제 */}
+          <button
+            onClick={() => { onUpdate(row.id, { substitute: "" }); setShowSub(false); }}
+            style={{ background: "none", border: "none", color: "#48c6ef", fontSize: 14, cursor: "pointer", opacity: 0.5, padding: 0 }}
+            onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+            onMouseLeave={e => e.currentTarget.style.opacity = "0.5"}>✕</button>
+          {!touch.current && <div />}
+        </div>
+      )}
     </div>
   );
 }
@@ -313,7 +376,10 @@ function PasswordGate({ onUnlock }) {
           <p style={{ fontSize: 13, color: "#5050a0" }}>접근 코드를 입력해주세요</p>
         </div>
         <div style={{ position: "relative", marginBottom: 8 }}>
-          <input type={show ? "text" : "password"} value={pw} onChange={e => { setPw(e.target.value); setWrong(false); }} onKeyDown={e => e.key === "Enter" && tryUnlock()} placeholder="비밀번호" autoFocus
+          <input type={show ? "text" : "password"} value={pw}
+            onChange={e => { setPw(e.target.value); setWrong(false); }}
+            onKeyDown={e => e.key === "Enter" && tryUnlock()}
+            placeholder="비밀번호" autoFocus
             style={{ width: "100%", padding: "14px 48px 14px 16px", background: "rgba(255,255,255,0.06)", border: `1px solid ${wrong ? "rgba(255,96,128,0.5)" : "rgba(108,99,255,0.25)"}`, borderRadius: 12, fontSize: 15, color: "#fff", outline: "none", letterSpacing: "2px", fontFamily: "inherit" }} />
           <button onClick={() => setShow(s => !s)} style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#5050a0", cursor: "pointer", fontSize: 16 }}>{show ? "🙈" : "👁️"}</button>
         </div>
@@ -326,7 +392,9 @@ function PasswordGate({ onUnlock }) {
 
 // ── PresetModal ───────────────────────────────────────────────────────────────
 function PresetModal({ presets, currentRows, onSave, onLoad, onDelete, onClose }) {
-  const [mode, setMode] = useState("load"); const [newName, setNewName] = useState(""); const [confirm, setConfirm] = useState(null);
+  const [mode, setMode] = useState("load");
+  const [newName, setNewName] = useState("");
+  const [confirm, setConfirm] = useState(null);
   const handleSave = () => { const n = newName.trim(); if (!n || !currentRows.length) return; onSave(n); setNewName(""); setMode("load"); };
   return (
     <div onClick={e => e.target === e.currentTarget && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(5,5,20,0.75)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center", backdropFilter: "blur(4px)" }}>
@@ -344,7 +412,8 @@ function PresetModal({ presets, currentRows, onSave, onLoad, onDelete, onClose }
           <div>
             <p style={{ fontSize: 12, color: "#5060a0", marginBottom: 12 }}>현재 멤버 {currentRows.length}명의 이름과 참여 상태를 저장해요.<br/><span style={{ color: "#404060" }}>메뉴 내용은 저장되지 않아요.</span></p>
             <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
-              {currentRows.length === 0 ? <div style={{ fontSize: 12, color: "#404060", textAlign: "center" }}>현재 멤버가 없어요.</div>
+              {currentRows.length === 0
+                ? <div style={{ fontSize: 12, color: "#404060", textAlign: "center" }}>현재 멤버가 없어요.</div>
                 : currentRows.map(r => (
                   <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
                     <span style={{ fontSize: 12, color: r.active ? "#6c63ff" : "#404060" }}>{r.active ? "●" : "○"}</span>
@@ -444,11 +513,11 @@ function Loading() {
 export default function App() {
   const [authed, setAuthed] = useState(() => localStorage.getItem(LS_AUTH) === "ok");
 
-  // rows: LocalStorage만 (실시간 동기화 없음 → 타이핑 충돌 없음)
+  // rows: LocalStorage만 (Firebase 실시간 저장 없음)
   const [rows, setRows] = useState(loadRows);
   useEffect(() => saveRows(rows), [rows]);
 
-  // Firebase 실시간 구독 (archive, presets, menuHistory)
+  // Firebase 실시간 구독
   const [archive,     archiveReady]     = useFireCol(archiveCol,     "order");
   const [presets,     presetsReady]     = useFireCol(presetsCol,     "order");
   const [menuHistory, menuHistoryReady] = useFireColNoOrder(menuHistoryCol);
@@ -468,23 +537,21 @@ export default function App() {
   const showToast = msg => { setToast(msg); clearTimeout(toastRef.current); toastRef.current = setTimeout(() => setToast(null), 2400); };
   const logout    = () => { localStorage.removeItem(LS_AUTH); setAuthed(false); };
 
-  // ── 자동완성 목록: Firebase menuHistory (입력/포커스아웃 시 자동 저장됨) ───
-  // useMemo 없이 직접 계산 (menuHistory 변경 즉시 반영)
+  // 자동완성: menuHistory에서 메인 메뉴만 (대체음료 제외)
   const menuOptions = menuHistory
     .map(h => h.name)
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b, "ko"));
-  console.log("📋 menuOptions:", menuOptions.length, "개", menuOptions);
 
-  // ── rows CRUD (로컬) ──────────────────────────────────────────────────────
+  // ── rows CRUD ─────────────────────────────────────────────────────────────
   const updateRow = useCallback((id, patch) => {
     setRows(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
   }, []);
-  const addRow    = () => setRows(prev => [...prev, { id: uid(), name: "", menu: "", active: true }]);
+  const addRow    = () => setRows(prev => [...prev, { id: uid(), name: "", menu: "", substitute: "", active: true }]);
   const deleteRow = id => { setRows(prev => prev.filter(r => r.id !== id)); showToast("삭제됐어요 🗑"); };
   const resetRows = () => { if (window.confirm("현재 주문을 초기화할까요?\n(아카이브·프리셋·메뉴목록은 유지됩니다)")) { setRows([]); showToast("초기화 완료!"); } };
 
-  // ── 드래그 정렬 ────────────────────────────────────────────────────────────
+  // ── 드래그 정렬 ───────────────────────────────────────────────────────────
   const handleDragStart = useCallback(idx => { dragIdx.current = idx; setDraggingIdx(idx); }, []);
   const handleDragEnter = useCallback(idx => { overIdx.current = idx; setOverIndex(idx); }, []);
   const handleDragEnd   = useCallback(() => {
@@ -496,26 +563,25 @@ export default function App() {
     setDraggingIdx(null); setOverIndex(null);
   }, []);
 
-  // ── 프리셋 (Firebase) ──────────────────────────────────────────────────────
-  const savePreset = async name => {
+  // ── 프리셋 (Firebase) ─────────────────────────────────────────────────────
+  const savePreset   = async name => {
     const id = uid();
     await setDoc(doc(db, "presets", id), { id, name, savedAt: new Date().toISOString().slice(0,10), members: rows.map(r => ({ name: r.name, active: r.active })), order: Date.now() });
     showToast(`💾 '${name}' 저장 완료!`);
   };
-  const loadPreset   = p => { setRows(p.members.map(m => ({ id: uid(), name: m.name, menu: "", active: m.active }))); showToast(`📂 '${p.name}' 불러왔어요!`); };
+  const loadPreset   = p => { setRows(p.members.map(m => ({ id: uid(), name: m.name, menu: "", substitute: "", active: m.active }))); showToast(`📂 '${p.name}' 불러왔어요!`); };
   const deletePreset = async id => { await deleteDoc(doc(db, "presets", id)); showToast("프리셋 삭제됐어요"); };
 
-  // ✅ menuHistory 삭제 함수
+  // ── menuHistory 삭제 ──────────────────────────────────────────────────────
   const handleDeleteHistory = async (docId) => {
     try {
       await deleteDoc(doc(db, "menuHistory", docId));
-      // useFireColNoOrder가 실시간 구독 중이라 자동으로 UI 업데이트됨
     } catch (e) {
       console.error("menuHistory 삭제 실패:", e);
     }
   };
 
-  // ── 주문 확정 (Firebase archive) ───────────────────────────────────────────
+  // ── 주문 확정 (Firebase archive) — 대체음료 포함 저장 ────────────────────
   const confirmOrder = async () => {
     const active = rows.filter(r => r.active && r.menu?.trim() && r.menu !== "없음");
     if (!active.length) { showToast("확정할 주문이 없어요 😅"); return; }
@@ -523,24 +589,37 @@ export default function App() {
     const now = new Date();
     const id  = uid();
     await setDoc(doc(db, "archive", id), {
-      id, date: now.toISOString().slice(0,10),
-      year: now.getFullYear(), month: now.getMonth() + 1,
-      orders: active.map(r => ({ name: r.name, menu: r.menu.trim() })),
+      id,
+      date:   now.toISOString().slice(0, 10),
+      year:   now.getFullYear(),
+      month:  now.getMonth() + 1,
+      orders: active.map(r => ({
+        name:      r.name,
+        menu:      r.menu.trim(),
+        substitute: r.substitute?.trim() || "",  // 대체음료 포함
+      })),
       order: Date.now(),
     });
-    // 확정 메뉴도 menuHistory에 저장
+    // 확정된 메인 메뉴만 menuHistory에 저장 (대체음료는 제외)
     active.forEach(r => saveMenuHistory(r.menu));
     showToast(`✅ ${active.length}건 저장됐어요!`);
   };
 
   const copyText = () => {
     const summ = getSummary(rows);
-    const lines = ["📋 주문 요약", `총 ${rows.filter(r=>r.active).length}명 참여 / ${rows.filter(r=>r.active&&r.menu?.trim()&&r.menu!=="없음").length}명 주문`, ""];
+    const lines = ["📋 주문 요약",
+      `총 ${rows.filter(r=>r.active).length}명 참여 / ${rows.filter(r=>r.active&&r.menu?.trim()&&r.menu!=="없음").length}명 주문`, ""];
     summ.forEach(([m, c]) => lines.push(`${m}  ×${c}`));
+    // 대체음료 있는 사람 따로 표시
+    const withSub = rows.filter(r => r.active && r.substitute?.trim());
+    if (withSub.length) {
+      lines.push("", "── 대체음료 ──");
+      withSub.forEach(r => lines.push(`${r.name}: ${r.menu} → ${r.substitute}`));
+    }
     navigator.clipboard.writeText(lines.join("\n")).then(() => showToast("클립보드에 복사됐어요! 📋"));
   };
 
-  // ── 통계 ───────────────────────────────────────────────────────────────────
+  // ── 통계 ─────────────────────────────────────────────────────────────────
   const summ         = getSummary(rows);
   const activeCount  = rows.filter(r => r.active).length;
   const totalOrdered = rows.filter(r => r.active && r.menu?.trim() && r.menu !== "없음").length;
@@ -577,24 +656,31 @@ export default function App() {
         .tbtn{transition:all .18s} .chip{transition:all .15s} .chip:hover{filter:brightness(1.2)}
       `}</style>
 
+      {/* 배경 글로우 */}
       <div style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0, overflow: "hidden" }}>
         <div style={{ position: "absolute", top:-120, right:-80, width:400, height:400, borderRadius:"50%", background:"radial-gradient(circle,rgba(108,99,255,0.08),transparent 70%)" }} />
         <div style={{ position: "absolute", bottom:-100, left:-60, width:350, height:350, borderRadius:"50%", background:"radial-gradient(circle,rgba(72,198,239,0.06),transparent 70%)" }} />
       </div>
 
+      {/* 토스트 */}
       {toast && <div style={{ position:"fixed", top:20, right:20, zIndex:9999, background:"#2d2d4a", border:"1px solid #6c63ff44", borderRadius:12, padding:"10px 18px", fontSize:13, color:"#c8c8ff", boxShadow:"0 4px 24px rgba(0,0,0,0.4)", animation:"toastIn .25s ease" }}>{toast}</div>}
+
       {showPreset && <PresetModal presets={presets} currentRows={rows} onSave={savePreset} onLoad={loadPreset} onDelete={deletePreset} onClose={() => setShowPreset(false)} />}
 
-      <div style={{ maxWidth:640, margin:"0 auto", padding:"0 16px 100px", position:"relative", zIndex:1 }}>
-        <header style={{ padding:"28px 0 16px" }}>
-          <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:12 }}>
+      <div style={{ maxWidth: 640, margin: "0 auto", padding: "0 16px 100px", position: "relative", zIndex: 1 }}>
+
+        {/* 헤더 */}
+        <header style={{ padding: "28px 0 16px" }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
             <div>
-              <div style={{ fontSize:11, letterSpacing:"2px", textTransform:"uppercase", color:"#6c63ff", fontWeight:700, marginBottom:4 }}>LIVE ORDER BOARD</div>
-              <h1 style={{ fontSize:24, fontWeight:800, color:"#fff", letterSpacing:"-0.5px" }}>메뉴 취합 시스템</h1>
+              <div style={{ fontSize: 11, letterSpacing: "2px", textTransform: "uppercase", color: "#6c63ff", fontWeight: 700, marginBottom: 4 }}>LIVE ORDER BOARD</div>
+              <h1 style={{ fontSize: 24, fontWeight: 800, color: "#fff", letterSpacing: "-0.5px" }}>메뉴 취합 시스템</h1>
             </div>
-            <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:6 }}>
-              <div style={{ display:"flex", gap:6 }}>
-                {[[activeCount,"참여","#a09aff","rgba(108,99,255,0.12)","rgba(108,99,255,0.2)"],[totalOrdered,"주문","#48c6ef","rgba(72,198,239,0.1)","rgba(72,198,239,0.18)"],[archive.length,"기록","#f0a050","rgba(240,160,80,0.1)","rgba(240,160,80,0.18)"]].map(([v,l,c,bg,b]) => (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                {[[activeCount,"참여","#a09aff","rgba(108,99,255,0.12)","rgba(108,99,255,0.2)"],
+                  [totalOrdered,"주문","#48c6ef","rgba(72,198,239,0.1)","rgba(72,198,239,0.18)"],
+                  [archive.length,"기록","#f0a050","rgba(240,160,80,0.1)","rgba(240,160,80,0.18)"]].map(([v,l,c,bg,b]) => (
                   <div key={l} style={{ textAlign:"center", background:bg, border:`1px solid ${b}`, borderRadius:10, padding:"6px 12px" }}>
                     <div style={{ fontSize:18, fontWeight:800, color:c }}>{v}</div>
                     <div style={{ fontSize:9, color:"#7070a0" }}>{l}</div>
@@ -612,8 +698,9 @@ export default function App() {
         </header>
 
         {/* ══ 주문 입력 ══ */}
-        {view==="order" && (
-          <div style={{ animation:"fadeIn .3s ease" }}>
+        {view === "order" && (
+          <div style={{ animation: "fadeIn .3s ease" }}>
+            {/* 프리셋 바 */}
             <div style={{ display:"flex", gap:8, marginBottom:16, alignItems:"center" }}>
               <button className="abtn" onClick={() => setShowPreset(true)}
                 style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 14px", borderRadius:10, border:"1px solid rgba(108,99,255,0.25)", background:"rgba(108,99,255,0.08)", color:"#8080cc", fontSize:12, fontWeight:700, fontFamily:"inherit", flexShrink:0 }}>
@@ -627,12 +714,16 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {/* 컬럼 헤더 */}
             {rows.length > 0 && (
-              <div style={{ display:"grid", gridTemplateColumns:"22px 38px 1fr 1fr", gap:8, padding:"0 12px 8px", fontSize:10, letterSpacing:"1px", textTransform:"uppercase", color:"#5050a0" }}>
-                <div/><div>ON</div><div>이름</div><div>메뉴</div>
+              <div style={{ display:"grid", gridTemplateColumns:"22px 38px 1fr 1fr 28px", gap:6, padding:"0 12px 8px", fontSize:10, letterSpacing:"1px", textTransform:"uppercase", color:"#5050a0" }}>
+                <div/><div>ON</div><div>이름</div><div>메뉴 &nbsp;<span style={{color:"#3a3a6a"}}>✓=확정 ▼=이력 🔄=대체</span></div><div/>
               </div>
             )}
+
             {rows.length > 1 && <div style={{ fontSize:11, color:"#3a3a6a", textAlign:"center", marginBottom:8 }}>☰ 길게 눌러 드래그 정렬 &nbsp;|&nbsp; ← 스와이프해서 삭제</div>}
+
             {rows.length === 0
               ? <div style={{ textAlign:"center", padding:"40px 20px", color:"#303050", lineHeight:2 }}>
                   <div style={{ fontSize:36, marginBottom:12 }}>📋</div>
@@ -649,17 +740,22 @@ export default function App() {
                   />
                 ))
             }
-            <button className="abtn" onClick={addRow} style={{ width:"100%", marginTop:4, padding:"12px", background:"rgba(108,99,255,0.08)", border:"1.5px dashed rgba(108,99,255,0.3)", borderRadius:12, color:"#6c63ff", fontSize:14, fontWeight:700, fontFamily:"inherit" }}>+ 참여자 추가</button>
+
+            <button className="abtn" onClick={addRow} style={{ width:"100%", marginTop:4, padding:"12px", background:"rgba(108,99,255,0.08)", border:"1.5px dashed rgba(108,99,255,0.3)", borderRadius:12, color:"#6c63ff", fontSize:14, fontWeight:700, fontFamily:"inherit" }}>
+              + 참여자 추가
+            </button>
             <div style={{ display:"flex", gap:8, marginTop:10 }}>
               <button className="abtn" onClick={resetRows} style={{ flex:1, padding:"11px", borderRadius:10, border:"1px solid rgba(255,80,80,0.2)", background:"rgba(255,80,80,0.06)", color:"#ff8090", fontSize:12, fontWeight:600, fontFamily:"inherit" }}>↺ 초기화</button>
               <button className="abtn" onClick={() => setView("summary")} style={{ flex:2, padding:"11px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#6c63ff,#4a9eff)", color:"#fff", fontSize:12, fontWeight:700, fontFamily:"inherit", boxShadow:"0 4px 16px rgba(108,99,255,0.3)" }}>📊 요약 보기 →</button>
             </div>
-            <button className="abtn" onClick={confirmOrder} style={{ width:"100%", marginTop:8, padding:"15px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#f0a050,#e07030)", color:"#fff", fontSize:15, fontWeight:800, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(240,140,60,0.35)" }}>✅ 주문 확정 & 아카이브 저장</button>
+            <button className="abtn" onClick={confirmOrder} style={{ width:"100%", marginTop:8, padding:"15px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#f0a050,#e07030)", color:"#fff", fontSize:15, fontWeight:800, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(240,140,60,0.35)" }}>
+              ✅ 주문 확정 & 아카이브 저장
+            </button>
           </div>
         )}
 
         {/* ══ 요약 ══ */}
-        {view==="summary" && (
+        {view === "summary" && (
           <div style={{ animation:"fadeIn .3s ease" }}>
             <div style={{ background:"linear-gradient(135deg,rgba(108,99,255,0.12),rgba(72,198,239,0.08))", border:"1px solid rgba(108,99,255,0.2)", borderRadius:16, padding:"16px 20px", marginBottom:14 }}>
               <div style={{ fontSize:11, color:"#7070b0", marginBottom:10 }}>현재 주문 현황</div>
@@ -670,7 +766,8 @@ export default function App() {
               </div>
             </div>
             <div style={{ fontSize:10, letterSpacing:"1.5px", textTransform:"uppercase", color:"#5050a0", marginBottom:10 }}>메뉴별 집계</div>
-            {summ.length===0 ? <div style={{ textAlign:"center", padding:"32px", color:"#404060", fontSize:13 }}>아직 주문이 없어요</div>
+            {summ.length===0
+              ? <div style={{ textAlign:"center", padding:"32px", color:"#404060", fontSize:13 }}>아직 주문이 없어요</div>
               : <div style={{ display:"flex", flexDirection:"column", gap:7, marginBottom:14 }}>
                   {summ.map(([menu,cnt],i) => (
                     <div key={menu} style={{ background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.06)", borderRadius:12, padding:"11px 16px", position:"relative", overflow:"hidden" }}>
@@ -687,12 +784,22 @@ export default function App() {
             }
             <button className="abtn" onClick={copyText} style={{ width:"100%", padding:"14px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#6c63ff,#48c6ef)", color:"#fff", fontSize:14, fontWeight:700, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(108,99,255,0.3)", marginBottom:8 }}>📋 요약 텍스트 복사</button>
             <button className="abtn" onClick={confirmOrder} style={{ width:"100%", padding:"14px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#f0a050,#e07030)", color:"#fff", fontSize:14, fontWeight:700, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(240,140,60,0.3)" }}>✅ 주문 확정 & 아카이브 저장</button>
+
+            {/* 개인별 목록 (대체음료 포함) */}
             <div style={{ fontSize:10, letterSpacing:"1.5px", textTransform:"uppercase", color:"#5050a0", margin:"18px 0 8px" }}>개인별 목록</div>
             <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
               {rows.map(r => (
-                <div key={r.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 14px", borderRadius:10, background:r.active?"rgba(255,255,255,0.03)":"transparent", opacity:r.active?1:0.35 }}>
-                  <span style={{ fontSize:13, fontWeight:600, color:"#c0c0e0", textDecoration:r.active?"none":"line-through", minWidth:72 }}>{r.name||"—"}</span>
-                  <span style={{ fontSize:12, color:r.menu&&r.menu!=="없음"?"#8080cc":"#404060", textAlign:"right", maxWidth:"60%" }}>{r.menu||"—"}</span>
+                <div key={r.id} style={{ borderRadius:10, background:r.active?"rgba(255,255,255,0.03)":"transparent", opacity:r.active?1:0.35, overflow:"hidden" }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 14px" }}>
+                    <span style={{ fontSize:13, fontWeight:600, color:"#c0c0e0", textDecoration:r.active?"none":"line-through", minWidth:72 }}>{r.name||"—"}</span>
+                    <span style={{ fontSize:12, color:r.menu&&r.menu!=="없음"?"#8080cc":"#404060", textAlign:"right" }}>{r.menu||"—"}</span>
+                  </div>
+                  {r.substitute?.trim() && (
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 14px 8px", borderTop:"1px solid rgba(72,198,239,0.1)" }}>
+                      <span style={{ fontSize:11, color:"#48c6ef", opacity:0.7 }}>↪ 대체</span>
+                      <span style={{ fontSize:12, color:"#70c8d8" }}>{r.substitute}</span>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -700,7 +807,7 @@ export default function App() {
         )}
 
         {/* ══ 통계 ══ */}
-        {view==="stats" && (
+        {view === "stats" && (
           <div style={{ animation:"fadeIn .3s ease" }}>
             {archive.length===0
               ? <div style={{ textAlign:"center", padding:"60px 20px", color:"#404060", lineHeight:2 }}>
@@ -776,9 +883,16 @@ export default function App() {
                           </div>
                           <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
                             {entry.orders.map((o,i) => (
-                              <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:13 }}>
-                                <span style={{ color:"#8080a0", minWidth:60 }}>{o.name}</span>
-                                <span style={{ color:"#c8c8e8", textAlign:"right" }}>{o.menu}</span>
+                              <div key={i} style={{ fontSize:13 }}>
+                                <div style={{ display:"flex", justifyContent:"space-between" }}>
+                                  <span style={{ color:"#8080a0", minWidth:60 }}>{o.name}</span>
+                                  <span style={{ color:"#c8c8e8", textAlign:"right" }}>{o.menu}</span>
+                                </div>
+                                {o.substitute && (
+                                  <div style={{ display:"flex", justifyContent:"flex-end", fontSize:11, color:"#48c6ef", opacity:0.8, marginTop:2 }}>
+                                    ↪ 대체: {o.substitute}
+                                  </div>
+                                )}
                               </div>
                             ))}
                           </div>
@@ -791,22 +905,23 @@ export default function App() {
           </div>
         )}
       </div>
-    
-    {/* ✅ 디버그 패널 — 여기에 추가 */}
-    {import.meta.env.DEV && (
-      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0,
-        background: "rgba(0,0,0,0.9)", color: "#00ff88", fontSize: 10,
-        fontFamily: "monospace", padding: "6px 12px",
-        maxHeight: 100, overflowY: "auto", zIndex: 99999,
-        borderTop: "1px solid #222" }}>
-        menuHistory: {menuHistory.length}개 &nbsp;|&nbsp;
-        menuOptions: {menuOptions.length}개 &nbsp;|&nbsp;
-        rows: {rows.length}개
-        <pre style={{ margin: "2px 0 0", fontSize: 9, color: "#88ffcc" }}>
-          {JSON.stringify(menuOptions, null, 1)}
-        </pre>
-      </div>
-    )} 
+
+      {/* ✅ 디버그 패널 */}
+      {import.meta.env.DEV && (
+        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0,
+          background: "rgba(0,0,0,0.9)", color: "#00ff88", fontSize: 10,
+          fontFamily: "monospace", padding: "6px 12px",
+          maxHeight: 100, overflowY: "auto", zIndex: 99999,
+          borderTop: "1px solid #222" }}>
+          menuHistory: {menuHistory.length}개 &nbsp;|&nbsp;
+          menuOptions: {menuOptions.length}개 &nbsp;|&nbsp;
+          rows: {rows.length}개
+          <pre style={{ margin: "2px 0 0", fontSize: 9, color: "#88ffcc" }}>
+            {JSON.stringify(menuOptions, null, 1)}
+          </pre>
+        </div>
+      )}
+
     </div>
   );
 }
