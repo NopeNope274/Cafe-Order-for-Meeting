@@ -806,8 +806,7 @@ export default function App() {
           {JSON.stringify(menuOptions, null, 1)}
         </pre>
       </div>
-    )}
-
-    </div>  {/* 최상위 div 닫기 — 파일 맨 마지막 줄 */}
+    )} 
+    </div>
   );
 }
