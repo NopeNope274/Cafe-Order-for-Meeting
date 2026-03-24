@@ -80,7 +80,7 @@ const saveMenuHistory = (menu) => {
 // ── MenuInput ─────────────────────────────────────────────────────────────────
 // 텍스트 직접 입력 + ▼ 버튼으로 이전 메뉴 목록 선택
 // onBlur 시 Firebase menuHistory에 저장 → 다음부터 목록에 표시
-function MenuInput({ value, onChange, options, placeholder, rowStyle }) {
+function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, rowStyle }) {
   const [local, setLocal] = useState(value);
   const [open,  setOpen]  = useState(false);
   const wrapRef = useRef(null);
@@ -91,11 +91,30 @@ function MenuInput({ value, onChange, options, placeholder, rowStyle }) {
     const close = e => { if (!wrapRef.current?.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", close);
     document.addEventListener("touchstart", close);
-    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("touchstart", close); };
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("touchstart", close);
+    };
   }, []);
 
-  const pick = v => { setLocal(v); onChange(v); saveMenuHistory(v); setOpen(false); };
-  const handleBlur = e => { const v = e.target.value.trim(); onChange(v); saveMenuHistory(v); };
+  const pick = v => {
+    setLocal(v);
+    onChange(v);
+    saveMenuHistory(v);
+    setOpen(false);
+  };
+
+  // ✅ onBlur 삭제 — Enter 키로만 저장
+  const handleKeyDown = e => {
+    if (e.key === "Enter") {
+      const v = local.trim();
+      onChange(v);
+      saveMenuHistory(v);
+      setOpen(false);
+      e.target.blur();
+    }
+  };
+
   const toggleDrop = e => { e.preventDefault(); e.stopPropagation(); setOpen(o => !o); };
 
   return (
@@ -103,7 +122,7 @@ function MenuInput({ value, onChange, options, placeholder, rowStyle }) {
       <input
         value={local}
         onChange={e => setLocal(e.target.value)}
-        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
         placeholder={placeholder}
         style={rowStyle}
       />
@@ -114,6 +133,7 @@ function MenuInput({ value, onChange, options, placeholder, rowStyle }) {
         transition: "color .15s, transform .2s",
         transform: open ? "rotate(180deg)" : "rotate(0deg)",
       }}>▼</button>
+
       {open && (
         <div style={{
           position: "absolute", top: "calc(100% + 4px)", right: 0,
@@ -125,16 +145,40 @@ function MenuInput({ value, onChange, options, placeholder, rowStyle }) {
           {options.length === 0
             ? <div style={{ padding: "16px", fontSize: 12, color: "#606080", textAlign: "center" }}>
                 아직 메뉴 기록이 없어요<br/>
-                <span style={{ fontSize: 11 }}>입력 후 다른 칸 클릭하면 저장돼요</span>
+                <span style={{ fontSize: 11 }}>Enter 키로 입력하면 저장돼요</span>
               </div>
             : options.map((o, i) => (
-                <div key={i}
-                  onMouseDown={e => { e.preventDefault(); pick(o); }}
-                  onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); pick(o); }}
-                  style={{ padding: "11px 16px", fontSize: 13, color: "#c8c8e8", cursor: "pointer", borderBottom: "1px solid #2d2d4a33", display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}
+                <div key={i} style={{
+                  padding: "10px 14px", fontSize: 13, color: "#c8c8e8",
+                  borderBottom: "1px solid #2d2d4a33",
+                  display: "flex", alignItems: "center", gap: 8,
+                  whiteSpace: "nowrap",
+                }}
                   onMouseEnter={e => e.currentTarget.style.background = "#2d2d4a"}
                   onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <span style={{ fontSize: 10, color: "#4040a0" }}>▸</span>{o}
+                  
+                  {/* 메뉴명 — 클릭하면 선택 */}
+                  <span style={{ fontSize: 10, color: "#4040a0" }}>▸</span>
+                  <span
+                    onMouseDown={e => { e.preventDefault(); pick(o); }}
+                    onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); pick(o); }}
+                    style={{ flex: 1, cursor: "pointer" }}>
+                    {o}
+                  </span>
+
+                  {/* ✅ X 버튼 — Firebase에서 삭제 */}
+                  <span
+                    onMouseDown={e => {
+                      e.preventDefault(); e.stopPropagation();
+                      const docId = o.replace(/[\s\/\\\.#\[\]*?]/g, "_").slice(0, 100);
+                      onDeleteHistory?.(docId);
+                    }}
+                    style={{ color: "#ff5060", fontSize: 13, cursor: "pointer",
+                      padding: "0 2px", opacity: 0.5, lineHeight: 1, flexShrink: 0 }}
+                    onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                    onMouseLeave={e => e.currentTarget.style.opacity = "0.5"}>
+                    ✕
+                  </span>
                 </div>
               ))
           }
@@ -145,7 +189,7 @@ function MenuInput({ value, onChange, options, placeholder, rowStyle }) {
 }
 
 // ── SwipeRow ──────────────────────────────────────────────────────────────────
-function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isOver, menuOptions }) {
+function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isOver, menuOptions, onDeleteHistory }) {
   const touch    = useRef(isTouch());
   const startX   = useRef(null); const startY = useRef(null);
   const swiped   = useRef(false);
@@ -230,6 +274,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           value={row.menu}
           onChange={v => onUpdate(row.id, { menu: v })}
           options={menuOptions}
+          onDeleteHistory={onDeleteHistory}
           placeholder="메뉴 입력/선택"
           rowStyle={{ background: "transparent", border: "none", fontSize: 13, color: row.active ? "#a0a0cc" : "#505070", fontFamily: "inherit", width: "100%", textDecoration: row.active ? "none" : "line-through", outline: "none" }}
         />
@@ -460,6 +505,16 @@ export default function App() {
   const loadPreset   = p => { setRows(p.members.map(m => ({ id: uid(), name: m.name, menu: "", active: m.active }))); showToast(`📂 '${p.name}' 불러왔어요!`); };
   const deletePreset = async id => { await deleteDoc(doc(db, "presets", id)); showToast("프리셋 삭제됐어요"); };
 
+  // ✅ menuHistory 삭제 함수
+  const handleDeleteHistory = async (docId) => {
+    try {
+      await deleteDoc(doc(db, "menuHistory", docId));
+      // useFireColNoOrder가 실시간 구독 중이라 자동으로 UI 업데이트됨
+    } catch (e) {
+      console.error("menuHistory 삭제 실패:", e);
+    }
+  };
+
   // ── 주문 확정 (Firebase archive) ───────────────────────────────────────────
   const confirmOrder = async () => {
     const active = rows.filter(r => r.active && r.menu?.trim() && r.menu !== "없음");
@@ -589,7 +644,9 @@ export default function App() {
                     onUpdate={updateRow} onDelete={deleteRow}
                     onDragStart={handleDragStart} onDragEnter={handleDragEnter} onDragEnd={handleDragEnd}
                     isDragging={draggingIdx===idx} isOver={overIndex===idx&&draggingIdx!==idx}
-                    menuOptions={menuOptions} />
+                    menuOptions={menuOptions}
+                    onDeleteHistory={handleDeleteHistory}
+                  />
                 ))
             }
             <button className="abtn" onClick={addRow} style={{ width:"100%", marginTop:4, padding:"12px", background:"rgba(108,99,255,0.08)", border:"1.5px dashed rgba(108,99,255,0.3)", borderRadius:12, color:"#6c63ff", fontSize:14, fontWeight:700, fontFamily:"inherit" }}>+ 참여자 추가</button>
@@ -734,6 +791,23 @@ export default function App() {
           </div>
         )}
       </div>
-    </div>
+    
+    {/* ✅ 디버그 패널 — 여기에 추가 */}
+    {import.meta.env.DEV && (
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0,
+        background: "rgba(0,0,0,0.9)", color: "#00ff88", fontSize: 10,
+        fontFamily: "monospace", padding: "6px 12px",
+        maxHeight: 100, overflowY: "auto", zIndex: 99999,
+        borderTop: "1px solid #222" }}>
+        menuHistory: {menuHistory.length}개 &nbsp;|&nbsp;
+        menuOptions: {menuOptions.length}개 &nbsp;|&nbsp;
+        rows: {rows.length}개
+        <pre style={{ margin: "2px 0 0", fontSize: 9, color: "#88ffcc" }}>
+          {JSON.stringify(menuOptions, null, 1)}
+        </pre>
+      </div>
+    )}
+
+    </div>  {/* 최상위 div 닫기 — 파일 맨 마지막 줄 */}
   );
 }
