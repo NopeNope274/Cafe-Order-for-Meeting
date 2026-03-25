@@ -237,10 +237,8 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
       {open && (
         <div
           ref={dropRef}
-          // 드롭다운 자체의 터치가 부모(SwipeRow)로 전파되지 않도록
           onTouchStart={e => e.stopPropagation()}
           onTouchMove={e => e.stopPropagation()}
-          onTouchEnd={e => e.stopPropagation()}
           style={{
             position: "absolute", top: "calc(100% + 4px)", right: 0,
             minWidth: "200px", width: "max-content", maxWidth: "80vw",
@@ -315,59 +313,61 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
     if (row.substitute) setShowSub(true);
   }, [row.substitute]);
 
-  const onTouchStart = (e) => {
-    startX.current = e.touches[0].clientX;
-    startY.current = e.touches[0].clientY;
-    swiped.current = false;
-    direction.current = null;
-    setSwiping(false);
-  };
+  const cardRef = useRef(null);
 
-  const onTouchMove = (e) => {
-    if (startX.current === null) return;
-    const dx = e.touches[0].clientX - startX.current;
-    const dy = e.touches[0].clientY - startY.current;
-
-    if (!swiped.current && Math.abs(dy) > Math.abs(dx)) return; // 세로 스크롤 우선
-    if (Math.abs(dx) > 6) {
-      swiped.current = true;
-      setSwiping(true);
-      if (!direction.current) direction.current = dx < 0 ? "left" : "right";
-    }
-    if (!swiped.current) return;
-    e.preventDefault();
-
-    if (direction.current === "left") {
-      // ← 스와이프: 삭제 (오른쪽 배경)
-      const base = revealDelete ? -THRESHOLD : 0;
-      setOffsetX(Math.min(0, Math.max(-THRESHOLD - 20, dx + base)));
-    } else {
-      // → 스와이프: 대체메뉴 (왼쪽 배경)
-      const base = revealSub ? THRESHOLD : 0;
-      setOffsetX(Math.max(0, Math.min(THRESHOLD + 20, dx + base)));
-    }
-  };
-
-  const onTouchEnd = () => {
-    if (!swiped.current) return;
-    if (direction.current === "left") {
-      if (offsetX < -(THRESHOLD + 15))      { onDelete(row.id); }
-      else if (offsetX < -THRESHOLD / 2)    { setOffsetX(-THRESHOLD); setRevealDelete(true); }
-      else                                   { setOffsetX(0); setRevealDelete(false); }
-    } else {
-      if (offsetX > THRESHOLD / 2) {
-        setOffsetX(THRESHOLD);
-        setRevealSub(true);
-        setShowSub(true); // 대체메뉴 입력창도 열기
-      } else {
-        setOffsetX(0);
-        setRevealSub(false);
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el || !touch.current) return;
+    const onStart = (e) => {
+      startX.current = e.touches[0].clientX;
+      startY.current = e.touches[0].clientY;
+      swiped.current = false;
+      direction.current = null;
+      setSwiping(false);
+    };
+    const onMove = (e) => {
+      if (startX.current === null) return;
+      const dx = e.touches[0].clientX - startX.current;
+      const dy = e.touches[0].clientY - startY.current;
+      if (!swiped.current && Math.abs(dy) > Math.abs(dx)) return;
+      if (Math.abs(dx) > 6) {
+        swiped.current = true;
+        setSwiping(true);
+        if (!direction.current) direction.current = dx < 0 ? "left" : "right";
       }
-    }
-    setSwiping(false);
-    startX.current = null;
-    direction.current = null;
-  };
+      if (!swiped.current) return;
+      e.preventDefault();
+      if (direction.current === "left") {
+        const base = revealDelete ? -THRESHOLD : 0;
+        setOffsetX(Math.min(0, Math.max(-THRESHOLD - 20, dx + base)));
+      } else {
+        const base = revealSub ? THRESHOLD : 0;
+        setOffsetX(Math.max(0, Math.min(THRESHOLD + 20, dx + base)));
+      }
+    };
+    const onEnd = () => {
+      if (!swiped.current) return;
+      if (direction.current === "left") {
+        if (offsetX < -(THRESHOLD + 15))   { onDelete(row.id); }
+        else if (offsetX < -THRESHOLD / 2) { setOffsetX(-THRESHOLD); setRevealDelete(true); }
+        else                               { setOffsetX(0); setRevealDelete(false); }
+      } else {
+        if (offsetX > THRESHOLD / 2) { setOffsetX(THRESHOLD); setRevealSub(true); setShowSub(true); }
+        else                         { setOffsetX(0); setRevealSub(false); }
+      }
+      setSwiping(false);
+      startX.current = null;
+      direction.current = null;
+    };
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+    };
+  }, [revealDelete, revealSub, offsetX, row.id, onDelete]);
 
   const closeSwipe = () => {
     setOffsetX(0);
@@ -398,7 +398,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
       onDragOver={e => e.preventDefault()}
       onMouseEnter={() => { if (!touch.current) setHovered(true); }}
       onMouseLeave={() => { if (!touch.current) setHovered(false); }}
-      style={{ position: "relative", borderRadius: 12, marginBottom: 6, userSelect: "none", opacity: isDragging ? 0.35 : 1, touchAction: "pan-y" }}
+      style={{ position: "relative", borderRadius: 12, marginBottom: 6, userSelect: "none", opacity: isDragging ? 0.35 : 1, touchAction: swiping ? "none" : "pan-y" }}
     >
 
       {/* 모바일: 오른쪽 삭제 배경 (← 스와이프) */}
@@ -445,9 +445,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
 
       {/* 메인 카드 */}
       <div
-        onTouchStart={touch.current ? onTouchStart : undefined}
-        onTouchMove={touch.current ? onTouchMove : undefined}
-        onTouchEnd={touch.current ? onTouchEnd : undefined}
+        ref={cardRef}
         onClick={(revealDelete || revealSub) ? closeSwipe : undefined}
         style={{
           display: "grid",
