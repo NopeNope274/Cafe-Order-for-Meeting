@@ -111,25 +111,8 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
   const [local,   setLocal]   = useState(value);
   const [open,    setOpen]    = useState(false);
   const [focused, setFocused] = useState(false);
-  const [dropPos, setDropPos] = useState(null);
-  const wrapRef = useRef(null);
 
   useEffect(() => { setLocal(value); }, [value]);
-
-  useEffect(() => {
-    const close = (e) => { if (!wrapRef.current?.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("touchend", close);
-    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("touchend", close); };
-  }, []);
-
-  const openDrop = () => {
-    if (wrapRef.current) {
-      const r = wrapRef.current.getBoundingClientRect();
-      setDropPos({ top: r.bottom + 4, right: window.innerWidth - r.right, minWidth: r.width });
-    }
-    setOpen(o => !o);
-  };
 
   const filteredOptions = useMemo(() => {
     const search = local.trim().toLowerCase();
@@ -139,62 +122,66 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
   }, [local, options]);
 
   const commit = (v) => { onChange(v.trim()); setOpen(false); };
-  const pick   = (v) => { setLocal(v); commit(v); };
+  const pick   = (v) => { setLocal(v); onChange(v.trim()); setOpen(false); };
 
   return (
-    <div ref={wrapRef} style={{ display: "flex", alignItems: "center", flex: 1, gap: 2, position: "relative", minWidth: 0 }}>
-      <div style={{ position: "relative", flex: 1, minWidth: 0, display: "flex", alignItems: "center" }}>
-        <input
-          value={local}
-          onChange={e => { setLocal(e.target.value); if (e.target.value) setOpen(true); }}
-          onKeyDown={e => { if (e.key === "Enter") { commit(local); e.target.blur(); } }}
-          onFocus={() => setFocused(true)}
-          onBlur={() => { setFocused(false); commit(local); }}
-          placeholder={placeholder}
-          style={{ ...rowStyle, fontSize: "16px", paddingRight: (focused && local) ? "22px" : "2px", minWidth: 0 }}
-        />
-        {focused && local && (
-          <span
-            onMouseDown={e => { e.preventDefault(); setLocal(""); onChange(""); }}
-            onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); setLocal(""); onChange(""); }}
-            style={{ position: "absolute", right: 2, color: "#8080a0", fontSize: 13, cursor: "pointer", padding: "4px", touchAction: "none", lineHeight: 1 }}
-          >✕</span>
-        )}
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+        <div style={{ position: "relative", flex: 1, minWidth: 0, display: "flex", alignItems: "center" }}>
+          <input
+            value={local}
+            onChange={e => { setLocal(e.target.value); setOpen(true); }}
+            onKeyDown={e => { if (e.key === "Enter") { commit(local); e.target.blur(); } }}
+            onFocus={() => setFocused(true)}
+            onBlur={() => { setFocused(false); commit(local); }}
+            placeholder={placeholder}
+            style={{ ...rowStyle, fontSize: "16px", paddingRight: (focused && local) ? "22px" : "2px", minWidth: 0 }}
+          />
+          {focused && local && (
+            <span
+              onMouseDown={e => { e.preventDefault(); setLocal(""); onChange(""); }}
+              onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); setLocal(""); onChange(""); }}
+              style={{ position: "absolute", right: 2, color: "#8080a0", fontSize: 13, cursor: "pointer", padding: "4px", touchAction: "none", lineHeight: 1 }}>✕</span>
+          )}
+        </div>
+        <button
+          onMouseDown={e => { e.preventDefault(); setOpen(o => !o); }}
+          onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); setOpen(o => !o); }}
+          style={{ flexShrink: 0, background: "none", border: "none", color: open ? "#6c63ff" : "#3a3a6a", fontSize: 11, cursor: "pointer", padding: "2px 4px", lineHeight: 1, touchAction: "none", transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▼</button>
       </div>
 
-      <button
-        onMouseDown={e => { e.preventDefault(); openDrop(); }}
-        onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); openDrop(); }}
-        style={{ flexShrink: 0, background: "none", border: "none", color: open ? "#6c63ff" : "#3a3a6a", fontSize: 11, cursor: "pointer", padding: "2px 4px", lineHeight: 1, touchAction: "none", transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▼</button>
-
-      {open && dropPos && (
+      {open && (
         <div
           onTouchStart={e => e.stopPropagation()}
           onTouchMove={e => e.stopPropagation()}
           onTouchEnd={e => e.stopPropagation()}
           style={{
-            position: "fixed", top: dropPos.top, right: dropPos.right,
-            minWidth: Math.max(200, dropPos.minWidth), width: "max-content", maxWidth: "80vw",
-            background: "#13132a", border: "1px solid #3d3d6a", borderRadius: 12,
-            zIndex: 99999, maxHeight: 240, overflowY: "auto",
-            boxShadow: "0 8px 40px rgba(0,0,0,0.98)", WebkitOverflowScrolling: "touch",
+            marginTop: 4,
+            maxHeight: 200,
+            overflowY: "auto",
+            WebkitOverflowScrolling: "touch",
+            background: "#0e0e22",
+            border: "1px solid #2d2d5a",
+            borderRadius: 10,
+            zIndex: 10,
           }}>
           {filteredOptions.length === 0
-            ? <div style={{ padding: "14px", fontSize: 12, color: "#606080", textAlign: "center" }}>결과 없음</div>
+            ? <div style={{ padding: "12px 14px", fontSize: 12, color: "#505070", textAlign: "center" }}>결과 없음</div>
             : filteredOptions.map((o, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", borderBottom: "1px solid #2d2d4a44" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#2d2d4a"}
+                <div key={i}
+                  style={{ display: "flex", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.04)" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#1a1a38"}
                   onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                   <span
                     onMouseDown={e => { e.preventDefault(); pick(o); }}
                     onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); pick(o); }}
-                    style={{ flex: 1, padding: "14px 14px", fontSize: 14, color: "#c8c8e8", cursor: "pointer", userSelect: "none" }}>{o}</span>
+                    style={{ flex: 1, padding: "13px 14px", fontSize: 14, color: "#c8c8e8", cursor: "pointer", userSelect: "none" }}>{o}</span>
                   <span
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onDeleteHistory?.(o); }}
                     onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); onDeleteHistory?.(o); }}
-                    style={{ padding: "14px 14px", color: "#ff5060", fontSize: 13, cursor: "pointer", opacity: 0.5, touchAction: "none" }}
+                    style={{ padding: "13px 14px", color: "#ff5060", fontSize: 13, cursor: "pointer", opacity: 0.4, touchAction: "none" }}
                     onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                    onMouseLeave={e => e.currentTarget.style.opacity = "0.5"}>✕</span>
+                    onMouseLeave={e => e.currentTarget.style.opacity = "0.4"}>✕</span>
                 </div>
               ))
           }
@@ -330,7 +317,12 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
       onDragOver={e => e.preventDefault()}
       onMouseEnter={() => { if (!touch.current) setHovered(true); }}
       onMouseLeave={() => { if (!touch.current) setHovered(false); }}
-      style={{ position: "relative", borderRadius: 12, marginBottom: 6, userSelect: "none", opacity: isDragging ? 0.35 : 1 }}
+      style={{ position: "relative", borderRadius: 12, marginBottom: 6, userSelect: "none",
+        opacity: isDragging ? 0.4 : 1,
+        transform: isDragging ? "scale(0.97)" : isOver ? "scale(1.01)" : "scale(1)",
+        transition: "transform .15s ease, opacity .15s ease",
+        boxShadow: isOver ? "0 0 0 2px rgba(108,99,255,0.5)" : "none",
+      }}
     >
       {/* 삭제 버튼 (오른쪽 고정, 배경 없음) */}
       {showDelBtn && (
@@ -362,7 +354,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
         onClick={stage !== 0 ? resetSwipe : undefined}
         style={{
           display: "grid", gridTemplateColumns: gridCols,
-          gap: 6, alignItems: "center",
+          gap: 6, alignItems: "start",
           background: isOver ? "rgba(108,99,255,0.1)" : row.active ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.015)",
           border: `1px solid ${bc}`,
           borderRadius: showSub ? "12px 12px 0 0" : 12,
@@ -377,11 +369,11 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           {...(touch.current ? dragProps : {})}
           onPointerDown={!touch.current ? dragProps.onPointerDown : undefined}
           onPointerUp={!touch.current ? dragProps.onPointerUp : undefined}
-          style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "center", cursor: "grab", padding: "6px 4px", touchAction: "none" }}>
+          style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "center", cursor: "grab", padding: "6px 4px", paddingTop: 10, touchAction: "none" }}>
           {[0,1,2].map(i => <div key={i} style={{ width: 12, height: 2, borderRadius: 2, background: "#3a3a6a" }} />)}
         </div>
 
-        <label className="toggle-wrap" style={{ touchAction: "none" }}>
+        <label className="toggle-wrap" style={{ touchAction: "none", marginTop: 2 }}>
           <input type="checkbox" checked={row.active} onChange={e => onUpdate(row.id, { active: e.target.checked })} />
           <span className="toggle-slider" />
         </label>
@@ -390,7 +382,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           value={row.name}
           onChange={e => onUpdate(row.id, { name: e.target.value })}
           placeholder={`이름 ${idx + 1}`}
-          style={{ background: "transparent", border: "none", fontSize: "15px", fontWeight: 600, color: row.active ? "#e0e0ff" : "#606080", fontFamily: "inherit", width: "100%", textDecoration: row.active ? "none" : "line-through", outline: "none", minWidth: 0 }}
+          style={{ background: "transparent", border: "none", fontSize: "15px", fontWeight: 600, color: row.active ? "#e0e0ff" : "#606080", fontFamily: "inherit", width: "100%", textDecoration: row.active ? "none" : "line-through", outline: "none", minWidth: 0, paddingTop: 2 }}
         />
 
         <MenuInput
@@ -793,32 +785,30 @@ export default function App() {
     setDraggingIdx(null); setOverIndex(null);
   }, []);
 
-  // 터치 드래그: 핸들 터치 시작 → 행 전체를 손가락으로 끌어올리기
-  const touchDragIdx   = useRef(null);
-  const touchDragTimer = useRef(null);
+  const touchDragIdx = useRef(null);
 
   const handleDragHandle = useCallback((e, idx) => {
     e.preventDefault();
-    const touch = e.touches[0];
+    e.stopPropagation();
     touchDragIdx.current = idx;
     dragIdx.current = idx;
     setDraggingIdx(idx);
 
     const onMove = (me) => {
+      me.preventDefault();
       const t = me.touches[0];
-      // 터치 Y좌표로 어느 행 위에 있는지 계산
-      const els = document.querySelectorAll("[data-row]");
-      let target = null;
+      const els = Array.from(document.querySelectorAll("[data-row]"));
+      let targetIdx = null;
       let minDist = Infinity;
       els.forEach((el, i) => {
         const r = el.getBoundingClientRect();
         const mid = r.top + r.height / 2;
         const dist = Math.abs(t.clientY - mid);
-        if (dist < minDist) { minDist = dist; target = i; }
+        if (dist < minDist) { minDist = dist; targetIdx = i; }
       });
-      if (target !== null && target !== overIdx.current) {
-        overIdx.current = target;
-        setOverIndex(target);
+      if (targetIdx !== null && targetIdx !== overIdx.current) {
+        overIdx.current = targetIdx;
+        setOverIndex(targetIdx);
       }
     };
 
@@ -827,7 +817,12 @@ export default function App() {
       document.removeEventListener("touchend", onEnd);
       const from = dragIdx.current, to = overIdx.current;
       if (from !== null && to !== null && from !== to) {
-        setRows(prev => { const n = [...prev]; const [m] = n.splice(from, 1); n.splice(to, 0, m); return n; });
+        setRows(prev => {
+          const n = [...prev];
+          const [m] = n.splice(from, 1);
+          n.splice(to, 0, m);
+          return n;
+        });
       }
       dragIdx.current = null; overIdx.current = null;
       touchDragIdx.current = null;
