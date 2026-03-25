@@ -111,6 +111,7 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
   const [local,   setLocal]   = useState(value);
   const [open,    setOpen]    = useState(false);
   const [focused, setFocused] = useState(false);
+  const [dropPos, setDropPos] = useState(null);
   const wrapRef = useRef(null);
 
   useEffect(() => { setLocal(value); }, [value]);
@@ -121,6 +122,14 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
     document.addEventListener("touchend", close);
     return () => { document.removeEventListener("mousedown", close); document.removeEventListener("touchend", close); };
   }, []);
+
+  const openDrop = () => {
+    if (wrapRef.current) {
+      const r = wrapRef.current.getBoundingClientRect();
+      setDropPos({ top: r.bottom + 4, right: window.innerWidth - r.right, minWidth: r.width });
+    }
+    setOpen(o => !o);
+  };
 
   const filteredOptions = useMemo(() => {
     const search = local.trim().toLowerCase();
@@ -154,16 +163,22 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
       </div>
 
       <button
-        onMouseDown={e => { e.preventDefault(); setOpen(o => !o); }}
-        onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); setOpen(o => !o); }}
+        onMouseDown={e => { e.preventDefault(); openDrop(); }}
+        onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); openDrop(); }}
         style={{ flexShrink: 0, background: "none", border: "none", color: open ? "#6c63ff" : "#3a3a6a", fontSize: 11, cursor: "pointer", padding: "2px 4px", lineHeight: 1, touchAction: "none", transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▼</button>
 
-      {open && (
+      {open && dropPos && (
         <div
           onTouchStart={e => e.stopPropagation()}
           onTouchMove={e => e.stopPropagation()}
           onTouchEnd={e => e.stopPropagation()}
-          style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, minWidth: "180px", width: "max-content", maxWidth: "75vw", background: "#13132a", border: "1px solid #3d3d6a", borderRadius: 12, zIndex: 9999, maxHeight: 220, overflowY: "auto", boxShadow: "0 8px 40px rgba(0,0,0,0.95)", WebkitOverflowScrolling: "touch" }}>
+          style={{
+            position: "fixed", top: dropPos.top, right: dropPos.right,
+            minWidth: Math.max(200, dropPos.minWidth), width: "max-content", maxWidth: "80vw",
+            background: "#13132a", border: "1px solid #3d3d6a", borderRadius: 12,
+            zIndex: 99999, maxHeight: 240, overflowY: "auto",
+            boxShadow: "0 8px 40px rgba(0,0,0,0.98)", WebkitOverflowScrolling: "touch",
+          }}>
           {filteredOptions.length === 0
             ? <div style={{ padding: "14px", fontSize: 12, color: "#606080", textAlign: "center" }}>결과 없음</div>
             : filteredOptions.map((o, i) => (
@@ -173,11 +188,11 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
                   <span
                     onMouseDown={e => { e.preventDefault(); pick(o); }}
                     onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); pick(o); }}
-                    style={{ flex: 1, padding: "12px 14px", fontSize: 14, color: "#c8c8e8", cursor: "pointer", userSelect: "none" }}>{o}</span>
+                    style={{ flex: 1, padding: "14px 14px", fontSize: 14, color: "#c8c8e8", cursor: "pointer", userSelect: "none" }}>{o}</span>
                   <span
                     onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onDeleteHistory?.(o); }}
                     onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); onDeleteHistory?.(o); }}
-                    style={{ padding: "12px 12px", color: "#ff5060", fontSize: 13, cursor: "pointer", opacity: 0.5, touchAction: "none" }}
+                    style={{ padding: "14px 14px", color: "#ff5060", fontSize: 13, cursor: "pointer", opacity: 0.5, touchAction: "none" }}
                     onMouseEnter={e => e.currentTarget.style.opacity = "1"}
                     onMouseLeave={e => e.currentTarget.style.opacity = "0.5"}>✕</span>
                 </div>
@@ -189,7 +204,7 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
   );
 }
 
-function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isOver, menuOptions, onDeleteHistory, isMobile }) {
+function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isOver, menuOptions, onDeleteHistory, isMobile, onDragHandle }) {
   const touch   = useRef(isMobile);
   const cardRef = useRef(null);
   const startX  = useRef(null);
@@ -287,10 +302,17 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
 
   const resetSwipe = () => { setOffsetX(0); setStage(0); };
 
-  const dragProps = {
-    onPointerDown: e => e.currentTarget.closest("[data-row]").setAttribute("draggable", "true"),
-    onPointerUp:   e => e.currentTarget.closest("[data-row]").setAttribute("draggable", "false"),
+  const handleDragHandleTouch = (e) => {
+    e.stopPropagation();
+    onDragHandle?.(e, idx);
   };
+
+  const dragProps = touch.current
+    ? { onTouchStart: handleDragHandleTouch, style: { touchAction: "none" } }
+    : {
+        onPointerDown: e => e.currentTarget.closest("[data-row]").setAttribute("draggable", "true"),
+        onPointerUp:   e => e.currentTarget.closest("[data-row]").setAttribute("draggable", "false"),
+      };
 
   const bc = isOver ? "rgba(108,99,255,0.6)" : row.active ? "rgba(108,99,255,0.15)" : "rgba(255,255,255,0.04)";
   const gridCols = touch.current ? "20px 34px 80px 1fr" : "20px 34px 90px 1fr 28px 24px";
@@ -351,7 +373,11 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           position: "relative", zIndex: 2, overflow: "visible",
         }}>
 
-        <div {...dragProps} style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "center", cursor: "grab", padding: "4px 2px", touchAction: "none" }}>
+        <div
+          {...(touch.current ? dragProps : {})}
+          onPointerDown={!touch.current ? dragProps.onPointerDown : undefined}
+          onPointerUp={!touch.current ? dragProps.onPointerUp : undefined}
+          style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "center", cursor: "grab", padding: "6px 4px", touchAction: "none" }}>
           {[0,1,2].map(i => <div key={i} style={{ width: 12, height: 2, borderRadius: 2, background: "#3a3a6a" }} />)}
         </div>
 
@@ -755,7 +781,7 @@ export default function App() {
     setMenuHistory(prev => prev.filter(m => m !== menuName));
   }, []);
 
-  // ── 드래그 정렬 ───────────────────────────────────────────────────────────
+  // ── 드래그 정렬 (터치 + 마우스 통합) ────────────────────────────────────────
   const handleDragStart = useCallback(idx => { dragIdx.current = idx; setDraggingIdx(idx); }, []);
   const handleDragEnter = useCallback(idx => { overIdx.current = idx; setOverIndex(idx); }, []);
   const handleDragEnd   = useCallback(() => {
@@ -765,6 +791,51 @@ export default function App() {
     }
     dragIdx.current = null; overIdx.current = null;
     setDraggingIdx(null); setOverIndex(null);
+  }, []);
+
+  // 터치 드래그: 핸들 터치 시작 → 행 전체를 손가락으로 끌어올리기
+  const touchDragIdx   = useRef(null);
+  const touchDragTimer = useRef(null);
+
+  const handleDragHandle = useCallback((e, idx) => {
+    e.preventDefault();
+    const touch = e.touches[0];
+    touchDragIdx.current = idx;
+    dragIdx.current = idx;
+    setDraggingIdx(idx);
+
+    const onMove = (me) => {
+      const t = me.touches[0];
+      // 터치 Y좌표로 어느 행 위에 있는지 계산
+      const els = document.querySelectorAll("[data-row]");
+      let target = null;
+      let minDist = Infinity;
+      els.forEach((el, i) => {
+        const r = el.getBoundingClientRect();
+        const mid = r.top + r.height / 2;
+        const dist = Math.abs(t.clientY - mid);
+        if (dist < minDist) { minDist = dist; target = i; }
+      });
+      if (target !== null && target !== overIdx.current) {
+        overIdx.current = target;
+        setOverIndex(target);
+      }
+    };
+
+    const onEnd = () => {
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("touchend", onEnd);
+      const from = dragIdx.current, to = overIdx.current;
+      if (from !== null && to !== null && from !== to) {
+        setRows(prev => { const n = [...prev]; const [m] = n.splice(from, 1); n.splice(to, 0, m); return n; });
+      }
+      dragIdx.current = null; overIdx.current = null;
+      touchDragIdx.current = null;
+      setDraggingIdx(null); setOverIndex(null);
+    };
+
+    document.addEventListener("touchmove", onMove, { passive: false });
+    document.addEventListener("touchend", onEnd, { passive: true });
   }, []);
 
   // ── 프리셋 (로컬) ─────────────────────────────────────────────────────────
@@ -997,6 +1068,7 @@ export default function App() {
                     menuOptions={menuOptions}
                     onDeleteHistory={deleteFromHistory}
                     isMobile={isMobile.current}
+                    onDragHandle={handleDragHandle}
                   />
                 ))
             }
