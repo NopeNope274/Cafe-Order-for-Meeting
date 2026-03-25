@@ -156,34 +156,37 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
           onTouchMove={e => e.stopPropagation()}
           onTouchEnd={e => e.stopPropagation()}
           style={{
-            marginTop: 4,
-            maxHeight: 200,
-            overflowY: "auto",
-            WebkitOverflowScrolling: "touch",
-            background: "#0e0e22",
-            border: "1px solid #2d2d5a",
-            borderRadius: 10,
-            zIndex: 10,
+            marginTop: 4, maxHeight: 200, overflowY: "auto",
+            WebkitOverflowScrolling: "touch", background: "#0e0e22",
+            border: "1px solid #2d2d5a", borderRadius: 10, zIndex: 10,
           }}>
           {filteredOptions.length === 0
             ? <div style={{ padding: "12px 14px", fontSize: 12, color: "#505070", textAlign: "center" }}>결과 없음</div>
-            : filteredOptions.map((o, i) => (
-                <div key={i}
-                  style={{ display: "flex", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.04)" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#1a1a38"}
-                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <span
-                    onMouseDown={e => { e.preventDefault(); pick(o); }}
-                    onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); pick(o); }}
-                    style={{ flex: 1, padding: "13px 14px", fontSize: 14, color: "#c8c8e8", cursor: "pointer", userSelect: "none" }}>{o}</span>
-                  <span
-                    onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onDeleteHistory?.(o); }}
-                    onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); onDeleteHistory?.(o); }}
-                    style={{ padding: "13px 14px", color: "#ff5060", fontSize: 13, cursor: "pointer", opacity: 0.4, touchAction: "none" }}
-                    onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                    onMouseLeave={e => e.currentTarget.style.opacity = "0.4"}>✕</span>
-                </div>
-              ))
+            : filteredOptions.map((o, i) => {
+                let touchStartY = 0;
+                return (
+                  <div key={i}
+                    style={{ display: "flex", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.04)" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#1a1a38"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <span
+                      onMouseDown={e => { e.preventDefault(); pick(o); }}
+                      onTouchStart={e => { touchStartY = e.touches[0].clientY; }}
+                      onTouchEnd={e => {
+                        const dy = Math.abs(e.changedTouches[0].clientY - touchStartY);
+                        if (dy > 8) return; // 스크롤이면 무시
+                        e.preventDefault(); e.stopPropagation(); pick(o);
+                      }}
+                      style={{ flex: 1, padding: "13px 14px", fontSize: 14, color: "#c8c8e8", cursor: "pointer", userSelect: "none" }}>{o}</span>
+                    <span
+                      onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onDeleteHistory?.(o); }}
+                      onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); onDeleteHistory?.(o); }}
+                      style={{ padding: "13px 14px", color: "#ff5060", fontSize: 13, cursor: "pointer", opacity: 0.4, touchAction: "none" }}
+                      onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                      onMouseLeave={e => e.currentTarget.style.opacity = "0.4"}>✕</span>
+                  </div>
+                );
+              })
           }
         </div>
       )}
@@ -738,8 +741,11 @@ export default function App() {
 
   const dragIdx       = useRef(null);
   const overIdx       = useRef(null);
-  const [draggingIdx, setDraggingIdx] = useState(null);
-  const [overIndex,   setOverIndex]   = useState(null);
+  const [draggingIdx,   setDraggingIdx]   = useState(null);
+  const [overIndex,     setOverIndex]     = useState(null);
+  const [floatY,        setFloatY]        = useState(null); // 플로팅 블럭 Y좌표
+  const [floatSnap,     setFloatSnap]     = useState(null); // 스냅된 목표 인덱스
+  const [rowRects,      setRowRects]      = useState([]);   // 각 행의 화면 좌표
   const toastRef      = useRef(null);
 
   const showToast = (msg) => { setToast(msg); clearTimeout(toastRef.current); toastRef.current = setTimeout(() => setToast(null), 2400); };
@@ -790,25 +796,46 @@ export default function App() {
   const handleDragHandle = useCallback((e, idx) => {
     e.preventDefault();
     e.stopPropagation();
+
+    // 모든 행의 현재 위치 스냅샷
+    const els = Array.from(document.querySelectorAll("[data-row]"));
+    const rects = els.map(el => el.getBoundingClientRect());
+    setRowRects(rects);
+
     touchDragIdx.current = idx;
     dragIdx.current = idx;
+    overIdx.current = idx;
     setDraggingIdx(idx);
+    setOverIndex(idx);
+    setFloatSnap(idx);
+
+    const startY = e.touches[0].clientY;
+    const rowH   = rects[idx]?.height || 52;
+    setFloatY(rects[idx]?.top ?? startY);
+
+    const SNAP_DIST = rowH * 0.5;
 
     const onMove = (me) => {
       me.preventDefault();
-      const t = me.touches[0];
-      const els = Array.from(document.querySelectorAll("[data-row]"));
-      let targetIdx = null;
+      const ty = me.touches[0].clientY;
+      setFloatY(ty - rowH / 2);
+
+      // 가장 가까운 행 계산
+      let snapIdx = idx;
       let minDist = Infinity;
-      els.forEach((el, i) => {
-        const r = el.getBoundingClientRect();
+      rects.forEach((r, i) => {
+        if (i === idx) return;
         const mid = r.top + r.height / 2;
-        const dist = Math.abs(t.clientY - mid);
-        if (dist < minDist) { minDist = dist; targetIdx = i; }
+        const dist = Math.abs(ty - mid);
+        if (dist < minDist) { minDist = dist; snapIdx = i; }
       });
-      if (targetIdx !== null && targetIdx !== overIdx.current) {
-        overIdx.current = targetIdx;
-        setOverIndex(targetIdx);
+
+      // 스냅 거리 이내면 스냅
+      const target = minDist < SNAP_DIST * 2 ? snapIdx : idx;
+      if (target !== overIdx.current) {
+        overIdx.current = target;
+        setOverIndex(target);
+        setFloatSnap(target);
       }
     };
 
@@ -827,6 +854,7 @@ export default function App() {
       dragIdx.current = null; overIdx.current = null;
       touchDragIdx.current = null;
       setDraggingIdx(null); setOverIndex(null);
+      setFloatY(null); setFloatSnap(null); setRowRects([]);
     };
 
     document.addEventListener("touchmove", onMove, { passive: false });
@@ -1059,7 +1087,7 @@ export default function App() {
                     onDragEnter={handleDragEnter}
                     onDragEnd={handleDragEnd}
                     isDragging={draggingIdx===idx}
-                    isOver={overIndex===idx&&draggingIdx!==idx}
+                    isOver={floatSnap===idx && draggingIdx!==idx}
                     menuOptions={menuOptions}
                     onDeleteHistory={deleteFromHistory}
                     isMobile={isMobile.current}
@@ -1067,6 +1095,32 @@ export default function App() {
                   />
                 ))
             }
+
+            {/* 플로팅 드래그 블럭 */}
+            {floatY !== null && draggingIdx !== null && rows[draggingIdx] && (
+              <div style={{
+                position: "fixed", left: 16, right: 16, top: floatY,
+                zIndex: 9999, pointerEvents: "none",
+                opacity: 0.93,
+                transform: "scale(1.02)",
+                boxShadow: "0 10px 40px rgba(0,0,0,0.55)",
+                borderRadius: 12,
+                background: "linear-gradient(135deg,rgba(108,99,255,0.2),rgba(72,198,239,0.12))",
+                border: "1.5px solid rgba(108,99,255,0.55)",
+                padding: "11px 14px",
+                display: "flex", alignItems: "center", gap: 10,
+              }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3, flexShrink: 0 }}>
+                  {[0,1,2].map(i => <div key={i} style={{ width: 12, height: 2, borderRadius: 2, background: "#6c63ff" }} />)}
+                </div>
+                <span style={{ fontSize: 14, fontWeight: 700, color: "#e0e0ff", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {rows[draggingIdx].name || `이름 ${draggingIdx + 1}`}
+                </span>
+                <span style={{ fontSize: 13, color: "#a0a0cc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "45%" }}>
+                  {rows[draggingIdx].menu || "—"}
+                </span>
+              </div>
+            )}
 
             <button className="abtn" onClick={addRow} style={{ width:"100%", marginTop:4, padding:"12px", background:"rgba(108,99,255,0.08)", border:"1.5px dashed rgba(108,99,255,0.3)", borderRadius:12, color:"#6c63ff", fontSize:14, fontWeight:700, fontFamily:"inherit" }}>
               + 참여자 추가
