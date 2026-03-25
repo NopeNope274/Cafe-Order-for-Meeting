@@ -1,34 +1,42 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import {
-  db, archiveCol, presetsCol, menuHistoryCol,
-  doc, onSnapshot, setDoc, deleteDoc, query, orderBy,
-} from "./firebase.js";
 
-// ── 초성 추출 헬퍼 (ㄸ -> 딸기바나나 검색용) ───────────────────────────────────
+// ── 초성 추출 ──────────────────────────────────────────────────────────────────
 const getChosung = (str) => {
   const cho = ["ㄱ","ㄲ","ㄴ","ㄷ","ㄸ","ㄹ","ㅁ","ㅂ","ㅃ","ㅅ","ㅆ","ㅇ","ㅈ","ㅉ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"];
   let res = "";
-  for(let i=0; i<str.length; i++) {
+  for (let i = 0; i < str.length; i++) {
     const code = str.charCodeAt(i) - 44032;
-    if(code > -1 && code < 11172) res += cho[Math.floor(code / 588)];
+    if (code > -1 && code < 11172) res += cho[Math.floor(code / 588)];
     else res += str.charAt(i);
   }
   return res;
 };
 
-// ── 상수 ──────────────────────────────────────────────────────────────────────
+// ── 상수 & LocalStorage 헬퍼 ──────────────────────────────────────────────────
 const APP_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
-const LS_AUTH = "oc_auth";
-const LS_ROWS = "oc_rows";
+const LS_AUTH        = "oc_auth";
+const LS_ROWS        = "oc_rows";
+const LS_PRESETS     = "oc_presets";
+const LS_MENU_HIST   = "oc_menu_history";
+const LS_ARCHIVE     = "oc_archive";
 
-const saveRows = (rows) => { try { localStorage.setItem(LS_ROWS, JSON.stringify(rows)); } catch {} };
-const loadRows = () => { try { const r = localStorage.getItem(LS_ROWS); return r ? JSON.parse(r) : []; } catch { return []; } };
+const lsGet  = (key, def) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch { return def; } };
+const lsSet  = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
+
+const loadRows       = () => lsGet(LS_ROWS, []);
+const saveRows       = (v) => lsSet(LS_ROWS, v);
+const loadPresets    = () => lsGet(LS_PRESETS, []);
+const savePresets    = (v) => lsSet(LS_PRESETS, v);
+const loadMenuHist   = () => lsGet(LS_MENU_HIST, []);
+const saveMenuHist   = (v) => lsSet(LS_MENU_HIST, v);
+const loadArchive    = () => lsGet(LS_ARCHIVE, []);
+const saveArchive    = (v) => lsSet(LS_ARCHIVE, v);
 
 let _id = Date.now();
 const uid = () => String(++_id);
 
 const PALETTE = ["#6c63ff","#48c6ef","#f0a050","#ff6090","#50e0a0","#f0d050","#c070ff","#60c0ff"];
-const col = (i) => PALETTE[i % PALETTE.length];
+const col     = (i) => PALETTE[i % PALETTE.length];
 const isTouch = () => window.matchMedia("(hover: none) and (pointer: coarse)").matches;
 
 const getSummary = (rows) => {
@@ -42,62 +50,86 @@ const getSummary = (rows) => {
   return Object.entries(map).sort((a, b) => b[1] - a[1]);
 };
 
-// ── useFireCol ────────────────────────────────────────────────────────────────
-function useFireCol(col, orderField = "order") {
-  const [docs,  setDocs]  = useState([]);
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    const q = query(col, orderBy(orderField, "asc"));
-    const unsub = onSnapshot(q,
-      snap => { setDocs(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setReady(true); },
-      ()   => setReady(true)
-    );
-    return unsub;
-  }, []);
-  return [docs, ready];
-}
-
-// ── useFireColNoOrder ─────────────────────────────────────────────────────────
-function useFireColNoOrder(col) {
-  const [docs,  setDocs]  = useState([]);
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    const unsub = onSnapshot(col,
-      snap => { setDocs(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setReady(true); },
-      err  => { console.error("🔥 구독 에러:", err.code, err.message); setReady(true); }
-    );
-    return unsub;
-  }, []);
-  return [docs, ready];
-}
-
-// ── menuHistory 저장 헬퍼 ─────────────────────────────────────────────────────
-const saveMenuHistory = (menu) => {
+// ── 메뉴 히스토리 저장 헬퍼 (로컬) ───────────────────────────────────────────
+const addMenuHistory = (menu, current) => {
   const m = menu?.trim();
-  if (!m || m === "없음") return;
-  const key = m.replace(/[\s\/\\\.#\[\]*?]/g, "_").slice(0, 100);
-  setDoc(doc(db, "menuHistory", key), { name: m, order: m }, { merge: true });
+  if (!m || m === "없음") return current;
+  if (current.includes(m)) return current;
+  return [...current, m].sort((a, b) => a.localeCompare(b, "ko"));
 };
 
-// ── MenuInput — 텍스트 입력 + ▼ 드롭다운 + ✓ 확인 버튼 + X 지우기 ──────────────
-function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, rowStyle }) {
-  const [local, setLocal] = useState(value);
-  const [open,  setOpen]  = useState(false);
-  const wrapRef = useRef(null);
+// ── 내보내기/불러오기 헬퍼 ────────────────────────────────────────────────────
+const exportJSON = (archive, presets, menuHistory) => {
+  const data = {
+    exportedAt: new Date().toISOString(),
+    version: "3.0-local",
+    archive,
+    presets,
+    menuHistory,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `cafe-order-backup-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+const exportMD = (archive, presets, menuHistory) => {
+  const lines = [];
+  lines.push(`# ☕ 카페 메뉴 취합 시스템 백업`);
+  lines.push(`\n> 내보낸 날짜: ${new Date().toLocaleString("ko-KR")}\n`);
+
+  lines.push(`## 📋 메뉴 히스토리 (${menuHistory.length}개)`);
+  menuHistory.forEach(m => lines.push(`- ${m}`));
+
+  lines.push(`\n## 👥 프리셋 (${presets.length}개)`);
+  presets.forEach(p => {
+    lines.push(`\n### ${p.name} (${p.savedAt})`);
+    p.members.forEach(m => lines.push(`- [${m.active ? "x" : " "}] ${m.name}`));
+  });
+
+  lines.push(`\n## 📦 아카이브 (${archive.length}건)`);
+  [...archive].sort((a,b) => b.order - a.order).forEach(entry => {
+    lines.push(`\n### ${entry.date} (${entry.orders.length}명)`);
+    entry.orders.forEach(o => {
+      lines.push(`- **${o.name}**: ${o.menu}${o.substitute ? ` → 대체: ${o.substitute}` : ""}`);
+    });
+  });
+
+  const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `cafe-order-backup-${new Date().toISOString().slice(0,10)}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// ── MenuInput ─────────────────────────────────────────────────────────────────
+// 터치 환경: 드롭다운 열릴 때 바깥 스크롤 방지 + 터치이벤트 격리
+function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, rowStyle, isMobile }) {
+  const [local, setLocal]   = useState(value);
+  const [open,  setOpen]    = useState(false);
+  const wrapRef             = useRef(null);
+  const dropRef             = useRef(null);
 
   useEffect(() => { setLocal(value); }, [value]);
 
+  // 바깥 클릭/터치 시 닫기
   useEffect(() => {
-    const close = e => { if (!wrapRef.current?.contains(e.target)) setOpen(false); };
+    const close = (e) => {
+      if (!wrapRef.current?.contains(e.target)) setOpen(false);
+    };
     document.addEventListener("mousedown", close);
-    document.addEventListener("touchstart", close);
+    document.addEventListener("touchstart", close, { passive: true });
     return () => {
       document.removeEventListener("mousedown", close);
       document.removeEventListener("touchstart", close);
     };
   }, []);
 
-  // ㄸ -> 딸기바나나 실시간 필터링
   const filteredOptions = useMemo(() => {
     const search = local.trim().toLowerCase();
     if (!search) return options;
@@ -111,48 +143,73 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
   const commit = (v) => {
     const trimmed = v.trim();
     onChange(trimmed);
-    if (trimmed !== "") saveMenuHistory(trimmed); // 빈칸 아닐 때만 저장!
     setOpen(false);
   };
 
-  const pick = v => { setLocal(v); commit(v); };
+  const pick = (v) => {
+    setLocal(v);
+    commit(v);
+  };
 
-  // Enter 키 또는 ✓ 버튼으로만 확정
-  const handleKeyDown = e => {
+  const handleKeyDown = (e) => {
     if (e.key === "Enter") { commit(local); e.target.blur(); }
   };
-  const handleConfirm = e => {
-    e.preventDefault(); e.stopPropagation();
+
+  const handleConfirm = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
     commit(local);
   };
 
-  const toggleDrop = e => { e.preventDefault(); e.stopPropagation(); setOpen(o => !o); };
-  
-  // X 버튼 누르면 텍스트 초기화
-  const clearInput = e => { e.preventDefault(); e.stopPropagation(); setLocal(""); onChange(""); };
+  const toggleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setOpen(o => !o);
+  };
+
+  const clearInput = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setLocal("");
+    onChange("");
+  };
+
+  // 모바일 드롭다운 항목 선택: touchend 사용 + stopPropagation으로 스와이프와 완전 격리
+  const handlePickTouch = (e, v) => {
+    e.preventDefault();
+    e.stopPropagation();
+    pick(v);
+  };
+
+  const handleDeleteTouch = (e, o) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onDeleteHistory?.(o);
+  };
 
   return (
-    <div ref={wrapRef} style={{ display: "flex", alignItems: "center", flex: 1, gap: 2, position: "relative" }}>
+    <div
+      ref={wrapRef}
+      style={{ display: "flex", alignItems: "center", flex: 1, gap: 2, position: "relative" }}
+    >
       <div style={{ position: "relative", flex: 1, display: "flex", alignItems: "center" }}>
         <input
           value={local}
-          onChange={e => { setLocal(e.target.value); setOpen(true); }}
+          onChange={e => { setLocal(e.target.value); if (e.target.value) setOpen(true); }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          // 모바일 줌 방지용 fontSize 16px 고정 & X 버튼 공간 확보
-          style={{ ...rowStyle, fontSize: "16px", paddingRight: local ? "24px" : "0" }} 
+          style={{ ...rowStyle, fontSize: "16px", paddingRight: local ? "24px" : "0" }}
         />
-        {/* 입력창 내부 전체 지우기(X) 버튼 */}
         {local && (
           <span
             onMouseDown={clearInput}
-            onTouchStart={clearInput}
-            style={{ position: "absolute", right: 4, color: "#8080a0", fontSize: 14, cursor: "pointer", padding: "4px" }}
+            onTouchEnd={clearInput}
+            style={{ position: "absolute", right: 4, color: "#8080a0", fontSize: 14, cursor: "pointer", padding: "4px", touchAction: "none" }}
           >✕</span>
         )}
       </div>
 
-      {/* ✓ 확인 버튼 — 모바일 Enter 대체 */}
+      {/* ✓ 확인 버튼 */}
       <button
         onMouseDown={handleConfirm}
         onTouchEnd={handleConfirm}
@@ -160,67 +217,70 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
           flexShrink: 0, background: "none", border: "none",
           color: local.trim() ? "#48c6ef" : "#2a2a4a",
           fontSize: 16, cursor: "pointer", padding: "2px 4px", lineHeight: 1,
-          transition: "color .15s",
+          transition: "color .15s", touchAction: "none",
         }}>✓</button>
 
-      {/* ▼ 드롭다운 버튼 (언제든 열어서 다른 메뉴로 교체 가능) */}
+      {/* ▼ 드롭다운 버튼 */}
       <button
-        onClick={toggleDrop}
+        onMouseDown={toggleDrop}
+        onTouchEnd={toggleDrop}
         style={{
           flexShrink: 0, background: "none", border: "none",
           color: open ? "#6c63ff" : "#3a3a6a",
           fontSize: 12, cursor: "pointer", padding: "2px 4px", lineHeight: 1,
           transition: "color .15s, transform .2s",
           transform: open ? "rotate(180deg)" : "rotate(0deg)",
+          touchAction: "none",
         }}>▼</button>
 
       {/* 드롭다운 목록 */}
       {open && (
-        <div style={{
-          position: "absolute", top: "calc(100% + 4px)", right: 0,
-          minWidth: "200px", width: "max-content", maxWidth: "300px",
-          background: "#13132a", border: "1px solid #3d3d6a", borderRadius: 12,
-          zIndex: 9999, maxHeight: 260, overflowY: "auto",
-          boxShadow: "0 8px 40px rgba(0,0,0,0.9)",
-        }}>
+        <div
+          ref={dropRef}
+          // 드롭다운 자체의 터치가 부모(SwipeRow)로 전파되지 않도록
+          onTouchStart={e => e.stopPropagation()}
+          onTouchMove={e => e.stopPropagation()}
+          onTouchEnd={e => e.stopPropagation()}
+          style={{
+            position: "absolute", top: "calc(100% + 4px)", right: 0,
+            minWidth: "200px", width: "max-content", maxWidth: "80vw",
+            background: "#13132a", border: "1px solid #3d3d6a", borderRadius: 12,
+            zIndex: 9999, maxHeight: 240, overflowY: "auto",
+            boxShadow: "0 8px 40px rgba(0,0,0,0.9)",
+            // iOS 스크롤 허용
+            WebkitOverflowScrolling: "touch",
+          }}>
           {filteredOptions.length === 0
             ? <div style={{ padding: "16px", fontSize: 12, color: "#606080", textAlign: "center" }}>
-                검색 결과가 없어요<br/>
-                <span style={{ fontSize: 11 }}>✓ 버튼이나 Enter로 입력하면 저장돼요</span>
+                검색 결과 없음<br/>
+                <span style={{ fontSize: 11 }}>✓ 버튼이나 Enter로 저장</span>
               </div>
             : filteredOptions.map((o, i) => (
-                <div key={i} style={{
-                  padding: "10px 14px", fontSize: 14, color: "#c8c8e8",
-                  borderBottom: "1px solid #2d2d4a33",
-                  display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap",
-                }}
+                <div
+                  key={i}
+                  style={{
+                    padding: "11px 14px", fontSize: 14, color: "#c8c8e8",
+                    borderBottom: "1px solid #2d2d4a33",
+                    display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap",
+                    // 터치 시 즉각 반응하도록
+                    WebkitTapHighlightColor: "rgba(108,99,255,0.2)",
+                  }}
                   onMouseEnter={e => e.currentTarget.style.background = "#2d2d4a"}
-                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                >
                   <span style={{ fontSize: 10, color: "#4040a0" }}>▸</span>
                   <span
                     onMouseDown={e => { e.preventDefault(); pick(o); }}
-                    onTouchStart={e => { e.preventDefault(); pick(o); }} // onTouchStart로 즉시 선택되게 수정
-                    style={{ flex: 1, cursor: "pointer" }}>
-                    {o}
-                  </span>
-                  {/* X 버튼 — Firebase에서 아예 삭제 */}
+                    onTouchEnd={e => handlePickTouch(e, o)}
+                    style={{ flex: 1, cursor: "pointer", padding: "2px 0" }}
+                  >{o}</span>
                   <span
-                    onMouseDown={e => {
-                      e.preventDefault(); e.stopPropagation();
-                      const docId = o.replace(/[\s\/\\\.#\[\]*?]/g, "_").slice(0, 100);
-                      onDeleteHistory?.(docId);
-                    }}
-                    onTouchStart={e => {
-                      e.preventDefault(); e.stopPropagation();
-                      const docId = o.replace(/[\s\/\\\.#\[\]*?]/g, "_").slice(0, 100);
-                      onDeleteHistory?.(docId);
-                    }}
-                    style={{ color: "#ff5060", fontSize: 14, cursor: "pointer",
-                      padding: "4px", opacity: 0.5, lineHeight: 1, flexShrink: 0 }}
+                    onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onDeleteHistory?.(o); }}
+                    onTouchEnd={e => handleDeleteTouch(e, o)}
+                    style={{ color: "#ff5060", fontSize: 14, cursor: "pointer", padding: "4px", opacity: 0.5, lineHeight: 1, flexShrink: 0, touchAction: "none" }}
                     onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                    onMouseLeave={e => e.currentTarget.style.opacity = "0.5"}>
-                    ✕
-                  </span>
+                    onMouseLeave={e => e.currentTarget.style.opacity = "0.5"}
+                  >✕</span>
                 </div>
               ))
           }
@@ -230,37 +290,90 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
   );
 }
 
-// ── SwipeRow — 스와이프 삭제 + 드래그 + 대체음료 ─────────────────────────────
-function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isOver, menuOptions, onDeleteHistory }) {
-  const touch    = useRef(isTouch());
-  const startX   = useRef(null); const startY = useRef(null);
-  const swiped   = useRef(false);
-  const [offsetX,  setOffsetX]  = useState(0);
-  const [revealed, setRevealed] = useState(false);
-  const [swiping,  setSwiping]  = useState(false);
-  const [hovered,  setHovered]  = useState(false);
-  const [showSub,  setShowSub]  = useState(!!row.substitute); // 대체음료 입력창 표시
-  const THRESHOLD = 76;
+// ── SwipeRow ──────────────────────────────────────────────────────────────────
+// 모바일:
+//   왼쪽(←) 스와이프 → 🗑 삭제 노출
+//   오른쪽(→) 스와이프 → 🔄 대체메뉴 노출
+// PC: 호버 시 × 삭제 버튼 + 🔄 대체음료 버튼
+function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isOver, menuOptions, onDeleteHistory, isMobile }) {
+  const touch      = useRef(isMobile);
+  const startX     = useRef(null);
+  const startY     = useRef(null);
+  const swiped     = useRef(false);
+  const direction  = useRef(null); // "left" | "right"
 
-  const onTouchStart = e => { startX.current = e.touches[0].clientX; startY.current = e.touches[0].clientY; swiped.current = false; setSwiping(false); };
-  const onTouchMove  = e => {
+  const [offsetX,       setOffsetX]       = useState(0);
+  const [revealDelete,  setRevealDelete]  = useState(false);
+  const [revealSub,     setRevealSub]     = useState(false);
+  const [swiping,       setSwiping]       = useState(false);
+  const [hovered,       setHovered]       = useState(false);
+  const [showSub,       setShowSub]       = useState(!!row.substitute);
+  const THRESHOLD = 80;
+
+  // 대체음료 값이 있으면 자동으로 입력창 열기
+  useEffect(() => {
+    if (row.substitute) setShowSub(true);
+  }, [row.substitute]);
+
+  const onTouchStart = (e) => {
+    startX.current = e.touches[0].clientX;
+    startY.current = e.touches[0].clientY;
+    swiped.current = false;
+    direction.current = null;
+    setSwiping(false);
+  };
+
+  const onTouchMove = (e) => {
     if (startX.current === null) return;
     const dx = e.touches[0].clientX - startX.current;
     const dy = e.touches[0].clientY - startY.current;
-    if (!swiped.current && Math.abs(dy) > Math.abs(dx)) return;
-    if (Math.abs(dx) > 6) { swiped.current = true; setSwiping(true); }
+
+    if (!swiped.current && Math.abs(dy) > Math.abs(dx)) return; // 세로 스크롤 우선
+    if (Math.abs(dx) > 6) {
+      swiped.current = true;
+      setSwiping(true);
+      if (!direction.current) direction.current = dx < 0 ? "left" : "right";
+    }
     if (!swiped.current) return;
     e.preventDefault();
-    setOffsetX(Math.min(0, Math.max(-THRESHOLD - 20, dx + (revealed ? -THRESHOLD : 0))));
+
+    if (direction.current === "left") {
+      // ← 스와이프: 삭제 (오른쪽 배경)
+      const base = revealDelete ? -THRESHOLD : 0;
+      setOffsetX(Math.min(0, Math.max(-THRESHOLD - 20, dx + base)));
+    } else {
+      // → 스와이프: 대체메뉴 (왼쪽 배경)
+      const base = revealSub ? THRESHOLD : 0;
+      setOffsetX(Math.max(0, Math.min(THRESHOLD + 20, dx + base)));
+    }
   };
+
   const onTouchEnd = () => {
     if (!swiped.current) return;
-    if (offsetX < -(THRESHOLD + 15))   { onDelete(row.id); }
-    else if (offsetX < -THRESHOLD / 2) { setOffsetX(-THRESHOLD); setRevealed(true); }
-    else                                { setOffsetX(0); setRevealed(false); }
-    setSwiping(false); startX.current = null;
+    if (direction.current === "left") {
+      if (offsetX < -(THRESHOLD + 15))      { onDelete(row.id); }
+      else if (offsetX < -THRESHOLD / 2)    { setOffsetX(-THRESHOLD); setRevealDelete(true); }
+      else                                   { setOffsetX(0); setRevealDelete(false); }
+    } else {
+      if (offsetX > THRESHOLD / 2) {
+        setOffsetX(THRESHOLD);
+        setRevealSub(true);
+        setShowSub(true); // 대체메뉴 입력창도 열기
+      } else {
+        setOffsetX(0);
+        setRevealSub(false);
+      }
+    }
+    setSwiping(false);
+    startX.current = null;
+    direction.current = null;
   };
-  const closeSwipe = () => { setOffsetX(0); setRevealed(false); };
+
+  const closeSwipe = () => {
+    setOffsetX(0);
+    setRevealDelete(false);
+    setRevealSub(false);
+  };
 
   const dragProps = {
     onPointerDown: e => e.currentTarget.closest("[data-row]").setAttribute("draggable", "true"),
@@ -269,22 +382,63 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
 
   const bc = isOver ? "rgba(108,99,255,0.6)" : row.active ? "rgba(108,99,255,0.15)" : "rgba(255,255,255,0.04)";
 
+  // 모바일 그리드: 드래그핸들 + 토글 + 이름 + 메뉴 (버튼 없음)
+  // PC 그리드: 드래그핸들 + 토글 + 이름 + 메뉴 + 대체버튼 + X버튼
+  const gridCols = touch.current
+    ? "22px 34px 1fr 1fr"
+    : "22px 34px 1fr 1fr 28px 24px";
+
   return (
-    <div data-row draggable={false}
+    <div
+      data-row
+      draggable={false}
       onDragStart={e => { e.dataTransfer.effectAllowed = "move"; onDragStart(idx); }}
-      onDragEnter={() => onDragEnter(idx)} onDragEnd={onDragEnd} onDragOver={e => e.preventDefault()}
+      onDragEnter={() => onDragEnter(idx)}
+      onDragEnd={onDragEnd}
+      onDragOver={e => e.preventDefault()}
       onMouseEnter={() => { if (!touch.current) setHovered(true); }}
       onMouseLeave={() => { if (!touch.current) setHovered(false); }}
-      style={{ position: "relative", borderRadius: 12, marginBottom: 6, userSelect: "none", opacity: isDragging ? 0.35 : 1, touchAction: "pan-y" }}>
+      style={{ position: "relative", borderRadius: 12, marginBottom: 6, userSelect: "none", opacity: isDragging ? 0.35 : 1, touchAction: "pan-y" }}
+    >
 
-      {/* 모바일 삭제 배경 */}
+      {/* 모바일: 오른쪽 삭제 배경 (← 스와이프) */}
       {touch.current && (
-        <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: THRESHOLD, background: "linear-gradient(90deg,transparent,rgba(255,50,70,0.9))", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "0 12px 12px 0", opacity: revealed ? 1 : 0, transition: "opacity .2s", pointerEvents: revealed ? "auto" : "none", zIndex: 0 }}>
+        <div style={{
+          position: "absolute", right: 0, top: 0, bottom: showSub ? "auto" : 0,
+          height: showSub ? "calc(100% - 56px)" : undefined,
+          width: THRESHOLD,
+          background: "linear-gradient(90deg,transparent,rgba(255,50,70,0.9))",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          borderRadius: "0 12px 12px 0",
+          opacity: revealDelete ? 1 : 0, transition: "opacity .2s",
+          pointerEvents: revealDelete ? "auto" : "none", zIndex: 0,
+        }}>
           <button
             onTouchEnd={e => { e.stopPropagation(); e.preventDefault(); onDelete(row.id); }}
-            onClick={e => { e.stopPropagation(); onDelete(row.id); }}
             style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "8px 12px" }}>
-            <span style={{ fontSize: 20 }}>🗑</span><span style={{ fontSize: 10, fontWeight: 700 }}>삭제</span>
+            <span style={{ fontSize: 20 }}>🗑</span>
+            <span style={{ fontSize: 10, fontWeight: 700 }}>삭제</span>
+          </button>
+        </div>
+      )}
+
+      {/* 모바일: 왼쪽 대체메뉴 배경 (→ 스와이프) */}
+      {touch.current && (
+        <div style={{
+          position: "absolute", left: 0, top: 0, bottom: showSub ? "auto" : 0,
+          height: showSub ? "calc(100% - 56px)" : undefined,
+          width: THRESHOLD,
+          background: "linear-gradient(270deg,transparent,rgba(72,198,239,0.85))",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          borderRadius: "12px 0 0 12px",
+          opacity: revealSub ? 1 : 0, transition: "opacity .2s",
+          pointerEvents: revealSub ? "auto" : "none", zIndex: 0,
+        }}>
+          <button
+            onTouchEnd={e => { e.stopPropagation(); e.preventDefault(); setShowSub(true); closeSwipe(); }}
+            style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "8px 12px" }}>
+            <span style={{ fontSize: 20 }}>🔄</span>
+            <span style={{ fontSize: 10, fontWeight: 700 }}>대체</span>
           </button>
         </div>
       )}
@@ -294,15 +448,15 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
         onTouchStart={touch.current ? onTouchStart : undefined}
         onTouchMove={touch.current ? onTouchMove : undefined}
         onTouchEnd={touch.current ? onTouchEnd : undefined}
-        onClick={revealed ? closeSwipe : undefined}
+        onClick={(revealDelete || revealSub) ? closeSwipe : undefined}
         style={{
           display: "grid",
-          gridTemplateColumns: touch.current ? "22px 38px 1fr 1fr 28px" : "22px 38px 1fr 1fr 28px 24px",
+          gridTemplateColumns: gridCols,
           gap: 6, alignItems: "center",
           background: isOver ? "rgba(108,99,255,0.1)" : row.active ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.015)",
           border: `1px solid ${bc}`,
           borderRadius: showSub ? "12px 12px 0 0" : 12,
-          padding: "10px 12px",
+          padding: "10px 10px",
           opacity: row.active ? 1 : 0.5,
           transform: `translateX(${offsetX}px)`,
           transition: swiping ? "none" : "transform .25s ease, border-color .15s",
@@ -320,9 +474,18 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           <span className="toggle-slider" />
         </label>
 
-        {/* 이름 (fontSize 16px로 줌 방지) */}
-        <input value={row.name} onChange={e => onUpdate(row.id, { name: e.target.value })} placeholder={`이름 ${idx + 1}`}
-          style={{ background: "transparent", border: "none", fontSize: "16px", fontWeight: 600, color: row.active ? "#e0e0ff" : "#606080", fontFamily: "inherit", width: "100%", textDecoration: row.active ? "none" : "line-through", outline: "none" }} />
+        {/* 이름 */}
+        <input
+          value={row.name}
+          onChange={e => onUpdate(row.id, { name: e.target.value })}
+          placeholder={`이름 ${idx + 1}`}
+          style={{
+            background: "transparent", border: "none", fontSize: "16px", fontWeight: 600,
+            color: row.active ? "#e0e0ff" : "#606080", fontFamily: "inherit", width: "100%",
+            textDecoration: row.active ? "none" : "line-through", outline: "none",
+            minWidth: 0, // 그리드에서 넘치지 않도록
+          }}
+        />
 
         {/* 메뉴 */}
         <MenuInput
@@ -331,59 +494,74 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           options={menuOptions}
           onDeleteHistory={onDeleteHistory}
           placeholder="메뉴 입력/선택"
-          rowStyle={{ background: "transparent", border: "none", fontSize: "16px", color: row.active ? "#a0a0cc" : "#505070", fontFamily: "inherit", width: "100%", textDecoration: row.active ? "none" : "line-through", outline: "none" }}
+          isMobile={touch.current}
+          rowStyle={{
+            background: "transparent", border: "none", fontSize: "16px",
+            color: row.active ? "#a0a0cc" : "#505070", fontFamily: "inherit", width: "100%",
+            textDecoration: row.active ? "none" : "line-through", outline: "none", minWidth: 0,
+          }}
         />
 
-        {/* 🔄 대체음료 토글 버튼 */}
-        <button
-          onClick={() => setShowSub(s => !s)}
-          title="대체음료 추가"
-          style={{
-            background: "none", border: "none", cursor: "pointer", padding: "2px 3px",
-            fontSize: 14, opacity: showSub ? 1 : 0.3,
-            color: showSub ? "#48c6ef" : "#606080",
-            transition: "opacity .15s, color .15s",
-          }}>🔄</button>
-
-        {/* PC 삭제 */}
+        {/* PC: 대체음료 버튼 */}
         {!touch.current && (
-          <button onClick={() => onDelete(row.id)} style={{ opacity: hovered ? 1 : 0, background: "none", border: "none", color: "#ff6080", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", transition: "opacity .15s", padding: 0, cursor: "pointer" }}>×</button>
+          <button
+            onClick={() => setShowSub(s => !s)}
+            title="대체음료 추가"
+            style={{
+              background: "none", border: "none", cursor: "pointer", padding: "2px 3px",
+              fontSize: 14, opacity: showSub ? 1 : 0.3,
+              color: showSub ? "#48c6ef" : "#606080",
+              transition: "opacity .15s, color .15s",
+            }}>🔄</button>
+        )}
+
+        {/* PC: 삭제 버튼 */}
+        {!touch.current && (
+          <button
+            onClick={() => onDelete(row.id)}
+            style={{
+              opacity: hovered ? 1 : 0, background: "none", border: "none",
+              color: "#ff6080", fontSize: 18,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              transition: "opacity .15s", padding: 0, cursor: "pointer",
+            }}>×</button>
         )}
       </div>
 
       {/* 대체음료 입력창 */}
       {showSub && (
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: "22px 38px 1fr 1fr 28px" + (!touch.current ? " 24px" : ""),
-          gap: 6, alignItems: "center",
-          background: "rgba(72,198,239,0.05)",
-          border: `1px solid rgba(72,198,239,0.2)`,
-          borderTop: "none",
-          borderRadius: "0 0 12px 12px",
-          padding: "8px 12px",
-          transform: `translateX(${offsetX}px)`,
-          transition: swiping ? "none" : "transform .25s ease",
-        }}>
-          {/* 빈 칸 — 드래그 핸들 자리 */}
+        <div
+          onTouchStart={e => e.stopPropagation()}
+          onTouchMove={e => e.stopPropagation()}
+          onTouchEnd={e => e.stopPropagation()}
+          style={{
+            display: "grid",
+            gridTemplateColumns: touch.current ? "22px 34px auto 1fr 28px" : "22px 34px auto 1fr 28px 24px",
+            gap: 6, alignItems: "center",
+            background: "rgba(72,198,239,0.05)",
+            border: "1px solid rgba(72,198,239,0.2)",
+            borderTop: "none",
+            borderRadius: "0 0 12px 12px",
+            padding: "8px 10px",
+            transform: `translateX(${offsetX}px)`,
+            transition: swiping ? "none" : "transform .25s ease",
+          }}>
           <div />
-          {/* 대체 아이콘 */}
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", fontSize: 11, color: "#48c6ef", opacity: 0.7 }}>↪</div>
-          {/* 대체음료 라벨 */}
-          <div style={{ fontSize: 11, color: "#48c6ef", opacity: 0.8 }}>대체음료</div>
-          {/* 대체음료 입력 */}
+          <div style={{ fontSize: 11, color: "#48c6ef", opacity: 0.8, whiteSpace: "nowrap" }}>대체</div>
           <MenuInput
             value={row.substitute || ""}
             onChange={v => onUpdate(row.id, { substitute: v })}
             options={menuOptions}
             onDeleteHistory={onDeleteHistory}
-            placeholder="대체 메뉴 입력/선택"
-            rowStyle={{ background: "transparent", border: "none", fontSize: "16px", color: "#70c8d8", fontFamily: "inherit", width: "100%", outline: "none" }}
+            placeholder="대체 메뉴"
+            isMobile={touch.current}
+            rowStyle={{ background: "transparent", border: "none", fontSize: "16px", color: "#70c8d8", fontFamily: "inherit", width: "100%", outline: "none", minWidth: 0 }}
           />
-          {/* 대체음료 삭제 (입력창 닫기) */}
           <button
-            onClick={() => { onUpdate(row.id, { substitute: "" }); setShowSub(false); }}
-            style={{ background: "none", border: "none", color: "#48c6ef", fontSize: 14, cursor: "pointer", opacity: 0.5, padding: 0 }}
+            onMouseDown={e => { e.preventDefault(); onUpdate(row.id, { substitute: "" }); setShowSub(false); closeSwipe(); }}
+            onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); onUpdate(row.id, { substitute: "" }); setShowSub(false); closeSwipe(); }}
+            style={{ background: "none", border: "none", color: "#48c6ef", fontSize: 14, cursor: "pointer", opacity: 0.5, padding: 0, touchAction: "none" }}
             onMouseEnter={e => e.currentTarget.style.opacity = "1"}
             onMouseLeave={e => e.currentTarget.style.opacity = "0.5"}>✕</button>
           {!touch.current && <div />}
@@ -418,10 +596,7 @@ function PasswordGate({ onUnlock }) {
           <p style={{ fontSize: 13, color: "#5050a0" }}>접근 코드를 입력해주세요</p>
         </div>
         <div style={{ position: "relative", marginBottom: 8 }}>
-          <input type={show ? "text" : "password"} value={pw}
-            onChange={e => { setPw(e.target.value); setWrong(false); }}
-            onKeyDown={e => e.key === "Enter" && tryUnlock()}
-            placeholder="비밀번호" autoFocus
+          <input type={show ? "text" : "password"} value={pw} onChange={e => { setPw(e.target.value); setWrong(false); }} onKeyDown={e => e.key === "Enter" && tryUnlock()} placeholder="비밀번호" autoFocus
             style={{ width: "100%", padding: "14px 48px 14px 16px", background: "rgba(255,255,255,0.06)", border: `1px solid ${wrong ? "rgba(255,96,128,0.5)" : "rgba(108,99,255,0.25)"}`, borderRadius: 12, fontSize: 15, color: "#fff", outline: "none", letterSpacing: "2px", fontFamily: "inherit" }} />
           <button onClick={() => setShow(s => !s)} style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#5050a0", cursor: "pointer", fontSize: 16 }}>{show ? "🙈" : "👁️"}</button>
         </div>
@@ -437,7 +612,13 @@ function PresetModal({ presets, currentRows, onSave, onLoad, onDelete, onClose }
   const [mode, setMode] = useState("load");
   const [newName, setNewName] = useState("");
   const [confirm, setConfirm] = useState(null);
-  const handleSave = () => { const n = newName.trim(); if (!n || !currentRows.length) return; onSave(n); setNewName(""); setMode("load"); };
+  const handleSave = () => {
+    const n = newName.trim();
+    if (!n || !currentRows.length) return;
+    onSave(n);
+    setNewName("");
+    setMode("load");
+  };
   return (
     <div onClick={e => e.target === e.currentTarget && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(5,5,20,0.75)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center", backdropFilter: "blur(4px)" }}>
       <div style={{ width: "100%", maxWidth: 640, background: "linear-gradient(160deg,#12122a,#0d1a2a)", borderRadius: "20px 20px 0 0", padding: "24px 20px 44px", maxHeight: "80vh", overflowY: "auto", boxShadow: "0 -8px 40px rgba(0,0,0,0.5)", animation: "slideUp .3s ease" }}>
@@ -446,13 +627,13 @@ function PresetModal({ presets, currentRows, onSave, onLoad, onDelete, onClose }
           <button onClick={onClose} style={{ background: "none", border: "none", color: "#5050a0", fontSize: 22, cursor: "pointer" }}>×</button>
         </div>
         <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 3, marginBottom: 20 }}>
-          {[["load","📂 불러오기"],["save","💾 현재 상태 저장"]].map(([k,l]) => (
+          {[["load","📂 불러오기"],["save","💾 저장"]].map(([k,l]) => (
             <button key={k} onClick={() => setMode(k)} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 700, fontFamily: "inherit", background: mode===k ? "linear-gradient(135deg,#6c63ff,#4a9eff)" : "transparent", color: mode===k ? "#fff" : "#6060a0", cursor: "pointer" }}>{l}</button>
           ))}
         </div>
         {mode === "save" && (
           <div>
-            <p style={{ fontSize: 12, color: "#5060a0", marginBottom: 12 }}>현재 멤버 {currentRows.length}명의 이름과 참여 상태를 저장해요.<br/><span style={{ color: "#404060" }}>메뉴 내용은 저장되지 않아요.</span></p>
+            <p style={{ fontSize: 12, color: "#5060a0", marginBottom: 12 }}>멤버 {currentRows.length}명의 이름과 참여 상태를 저장해요.<br/><span style={{ color: "#404060" }}>메뉴 내용은 저장되지 않아요.</span></p>
             <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
               {currentRows.length === 0
                 ? <div style={{ fontSize: 12, color: "#404060", textAlign: "center" }}>현재 멤버가 없어요.</div>
@@ -465,7 +646,7 @@ function PresetModal({ presets, currentRows, onSave, onLoad, onDelete, onClose }
                 ))}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSave()} placeholder="프리셋 이름 (예: 아침팀, 점심팀)"
+              <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSave()} placeholder="프리셋 이름 (예: 아침팀)"
                 style={{ flex: 1, padding: "12px 14px", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(108,99,255,0.25)", borderRadius: 10, fontSize: 13, color: "#fff", outline: "none", fontFamily: "inherit" }} />
               <button onClick={handleSave} style={{ padding: "12px 18px", borderRadius: 10, border: "none", background: newName.trim() && currentRows.length > 0 ? "linear-gradient(135deg,#6c63ff,#4a9eff)" : "rgba(255,255,255,0.06)", color: newName.trim() && currentRows.length > 0 ? "#fff" : "#404060", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>저장</button>
             </div>
@@ -495,6 +676,100 @@ function PresetModal({ presets, currentRows, onSave, onLoad, onDelete, onClose }
                 <button onClick={() => { onLoad(p); onClose(); }} style={{ width: "100%", padding: "10px", borderRadius: 10, border: "none", background: "linear-gradient(135deg,rgba(108,99,255,0.3),rgba(72,198,239,0.2))", color: "#a09aff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>📂 이 프리셋으로 불러오기</button>
               </div>
             ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── DataModal (내보내기/불러오기) ─────────────────────────────────────────────
+function DataModal({ archive, presets, menuHistory, onImport, onClose }) {
+  const [mode, setMode]     = useState("export");
+  const [status, setStatus] = useState("");
+  const fileRef             = useRef(null);
+
+  const handleImportFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (!data.version?.includes("local") && !data.archive) {
+          setStatus("❌ 올바른 백업 파일이 아니에요");
+          return;
+        }
+        onImport(data);
+        setStatus(`✅ 불러오기 완료! 아카이브 ${data.archive?.length||0}건, 프리셋 ${data.presets?.length||0}개, 메뉴 ${data.menuHistory?.length||0}개`);
+      } catch {
+        setStatus("❌ 파일을 읽을 수 없어요. JSON 형식만 지원해요.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  return (
+    <div onClick={e => e.target === e.currentTarget && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(5,5,20,0.75)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center", backdropFilter: "blur(4px)" }}>
+      <div style={{ width: "100%", maxWidth: 640, background: "linear-gradient(160deg,#12122a,#0d1a2a)", borderRadius: "20px 20px 0 0", padding: "24px 20px 44px", maxHeight: "80vh", overflowY: "auto", boxShadow: "0 -8px 40px rgba(0,0,0,0.5)", animation: "slideUp .3s ease" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <h2 style={{ fontSize: 17, fontWeight: 800, color: "#fff" }}>💾 데이터 관리</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#5050a0", fontSize: 22, cursor: "pointer" }}>×</button>
+        </div>
+
+        <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 3, marginBottom: 20 }}>
+          {[["export","📤 내보내기"],["import","📥 불러오기"]].map(([k,l]) => (
+            <button key={k} onClick={() => setMode(k)} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 700, fontFamily: "inherit", background: mode===k ? "linear-gradient(135deg,#6c63ff,#4a9eff)" : "transparent", color: mode===k ? "#fff" : "#6060a0", cursor: "pointer" }}>{l}</button>
+          ))}
+        </div>
+
+        {mode === "export" && (
+          <div>
+            <p style={{ fontSize: 12, color: "#5060a0", marginBottom: 16, lineHeight: 1.7 }}>
+              현재 저장된 데이터를 파일로 내보내요.<br/>
+              <span style={{ color: "#404060" }}>JSON은 완벽한 복원, MD는 사람이 읽기 쉬운 형식이에요.</span>
+            </p>
+            <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 12, padding: "12px 16px", marginBottom: 16, display: "flex", gap: 20 }}>
+              {[[archive.length,"아카이브","#f0a050"],[presets.length,"프리셋","#a09aff"],[menuHistory.length,"메뉴 목록","#48c6ef"]].map(([v,l,c]) => (
+                <div key={l} style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: c }}>{v}</div>
+                  <div style={{ fontSize: 10, color: "#5050a0" }}>{l}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => exportJSON(archive, presets, menuHistory)}
+                style={{ flex: 1, padding: "13px", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#6c63ff,#4a9eff)", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                📄 JSON 내보내기
+              </button>
+              <button
+                onClick={() => exportMD(archive, presets, menuHistory)}
+                style={{ flex: 1, padding: "13px", borderRadius: 12, border: "1px solid rgba(108,99,255,0.3)", background: "rgba(108,99,255,0.08)", color: "#a09aff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                📝 MD 내보내기
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === "import" && (
+          <div>
+            <p style={{ fontSize: 12, color: "#5060a0", marginBottom: 16, lineHeight: 1.7 }}>
+              JSON 백업 파일을 불러와요.<br/>
+              <span style={{ color: "#ff8090" }}>⚠️ 기존 데이터에 병합돼요. 중복 항목은 최신 것으로 덮어씌워져요.</span>
+            </p>
+            <button
+              onClick={() => fileRef.current?.click()}
+              style={{ width: "100%", padding: "16px", borderRadius: 12, border: "2px dashed rgba(108,99,255,0.3)", background: "rgba(108,99,255,0.06)", color: "#8080cc", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+              📁 JSON 파일 선택
+            </button>
+            <input ref={fileRef} type="file" accept=".json" onChange={handleImportFile} style={{ display: "none" }} />
+            {status && (
+              <div style={{ marginTop: 14, padding: "12px 16px", borderRadius: 10, background: status.startsWith("✅") ? "rgba(80,224,160,0.1)" : "rgba(255,80,80,0.1)", border: `1px solid ${status.startsWith("✅") ? "rgba(80,224,160,0.3)" : "rgba(255,80,80,0.3)"}`, fontSize: 13, color: status.startsWith("✅") ? "#80e0a0" : "#ff8090" }}>
+                {status}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -542,56 +817,67 @@ function HBar({ label, value, max, color, rank }) {
   );
 }
 
-function Loading() {
-  return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg,#0d0d1a,#12122a,#0d1a2a)", gap: 16 }}>
-      <div style={{ fontSize: 36 }}>☕</div>
-      <div style={{ fontSize: 13, color: "#5050a0" }}>불러오는 중...</div>
-    </div>
-  );
-}
-
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 export default function App() {
-  const [authed, setAuthed] = useState(() => localStorage.getItem(LS_AUTH) === "ok");
+  const [authed,      setAuthed]      = useState(() => localStorage.getItem(LS_AUTH) === "ok");
+  const isMobile                      = useRef(isTouch());
 
-  // rows: LocalStorage만 (Firebase 실시간 저장 없음)
-  const [rows, setRows] = useState(loadRows);
-  useEffect(() => saveRows(rows), [rows]);
+  // ── 모든 데이터 localStorage ──────────────────────────────────────────────
+  const [rows,        setRows]        = useState(loadRows);
+  const [presets,     setPresets]     = useState(loadPresets);
+  const [menuHistory, setMenuHistory] = useState(loadMenuHist);
+  const [archive,     setArchive]     = useState(loadArchive);
 
-  // Firebase 실시간 구독
-  const [archive,     archiveReady]     = useFireCol(archiveCol,     "order");
-  const [presets,     presetsReady]     = useFireCol(presetsCol,     "order");
-  const [menuHistory, menuHistoryReady] = useFireColNoOrder(menuHistoryCol);
+  // 변경 시 자동 저장
+  useEffect(() => saveRows(rows),             [rows]);
+  useEffect(() => savePresets(presets),       [presets]);
+  useEffect(() => saveMenuHist(menuHistory),  [menuHistory]);
+  useEffect(() => saveArchive(archive),       [archive]);
 
-  const [view,       setView]       = useState("order");
-  const [toast,      setToast]      = useState(null);
-  const [showPreset, setShowPreset] = useState(false);
-  const [statMode,   setStatMode]   = useState("monthly");
-  const [statYear,   setStatYear]   = useState(() => new Date().getFullYear());
-  const [selPerson,  setSelPerson]  = useState(null);
+  const [view,        setView]        = useState("order");
+  const [toast,       setToast]       = useState(null);
+  const [showPreset,  setShowPreset]  = useState(false);
+  const [showData,    setShowData]    = useState(false);
+  const [statMode,    setStatMode]    = useState("monthly");
+  const [statYear,    setStatYear]    = useState(() => new Date().getFullYear());
+  const [selPerson,   setSelPerson]   = useState(null);
 
-  const dragIdx = useRef(null); const overIdx = useRef(null);
+  const dragIdx       = useRef(null);
+  const overIdx       = useRef(null);
   const [draggingIdx, setDraggingIdx] = useState(null);
   const [overIndex,   setOverIndex]   = useState(null);
-  const toastRef = useRef(null);
+  const toastRef      = useRef(null);
 
-  const showToast = msg => { setToast(msg); clearTimeout(toastRef.current); toastRef.current = setTimeout(() => setToast(null), 2400); };
+  const showToast = (msg) => { setToast(msg); clearTimeout(toastRef.current); toastRef.current = setTimeout(() => setToast(null), 2400); };
   const logout    = () => { localStorage.removeItem(LS_AUTH); setAuthed(false); };
 
-  // 자동완성: menuHistory에서 메인 메뉴만 (대체음료 제외)
-  const menuOptions = menuHistory
-    .map(h => h.name)
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b, "ko"));
+  // 자동완성 목록
+  const menuOptions = useMemo(() => [...menuHistory].sort((a, b) => a.localeCompare(b, "ko")), [menuHistory]);
 
   // ── rows CRUD ─────────────────────────────────────────────────────────────
   const updateRow = useCallback((id, patch) => {
     setRows(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
   }, []);
-  const addRow    = () => setRows(prev => [...prev, { id: uid(), name: "", menu: "", substitute: "", active: true }]);
-  const deleteRow = id => { setRows(prev => prev.filter(r => r.id !== id)); showToast("삭제됐어요 🗑"); };
-  const resetRows = () => { if (window.confirm("현재 주문을 초기화할까요?\n(아카이브·프리셋·메뉴목록은 유지됩니다)")) { setRows([]); showToast("초기화 완료!"); } };
+
+  const addRow = () => setRows(prev => [...prev, { id: uid(), name: "", menu: "", substitute: "", active: true }]);
+  const deleteRow = (id) => { setRows(prev => prev.filter(r => r.id !== id)); showToast("삭제됐어요 🗑"); };
+  const resetRows = () => {
+    if (window.confirm("현재 주문을 초기화할까요?\n(아카이브·프리셋·메뉴목록은 유지됩니다)")) {
+      setRows([]);
+      showToast("초기화 완료!");
+    }
+  };
+
+  // ── 메뉴 히스토리 관리 ────────────────────────────────────────────────────
+  const addToHistory = useCallback((menu) => {
+    const m = menu?.trim();
+    if (!m || m === "없음") return;
+    setMenuHistory(prev => addMenuHistory(m, prev));
+  }, []);
+
+  const deleteFromHistory = useCallback((menuName) => {
+    setMenuHistory(prev => prev.filter(m => m !== menuName));
+  }, []);
 
   // ── 드래그 정렬 ───────────────────────────────────────────────────────────
   const handleDragStart = useCallback(idx => { dragIdx.current = idx; setDraggingIdx(idx); }, []);
@@ -605,60 +891,102 @@ export default function App() {
     setDraggingIdx(null); setOverIndex(null);
   }, []);
 
-  // ── 프리셋 (Firebase) ─────────────────────────────────────────────────────
-  const savePreset   = async name => {
-    const id = uid();
-    await setDoc(doc(db, "presets", id), { id, name, savedAt: new Date().toISOString().slice(0,10), members: rows.map(r => ({ name: r.name, active: r.active })), order: Date.now() });
+  // ── 프리셋 (로컬) ─────────────────────────────────────────────────────────
+  const savePreset = (name) => {
+    const newPreset = {
+      id: uid(),
+      name,
+      savedAt: new Date().toISOString().slice(0, 10),
+      members: rows.map(r => ({ name: r.name, active: r.active })),
+      order: Date.now(),
+    };
+    setPresets(prev => [...prev, newPreset].sort((a,b) => a.order - b.order));
     showToast(`💾 '${name}' 저장 완료!`);
   };
-  const loadPreset   = p => { setRows(p.members.map(m => ({ id: uid(), name: m.name, menu: "", substitute: "", active: m.active }))); showToast(`📂 '${p.name}' 불러왔어요!`); };
-  const deletePreset = async id => { await deleteDoc(doc(db, "presets", id)); showToast("프리셋 삭제됐어요"); };
 
-  // ── menuHistory 삭제 ──────────────────────────────────────────────────────
-  const handleDeleteHistory = async (docId) => {
-    try {
-      await deleteDoc(doc(db, "menuHistory", docId));
-    } catch (e) {
-      console.error("menuHistory 삭제 실패:", e);
-    }
+  const loadPreset = (p) => {
+    setRows(p.members.map(m => ({ id: uid(), name: m.name, menu: "", substitute: "", active: m.active })));
+    showToast(`📂 '${p.name}' 불러왔어요!`);
   };
 
-  // ── 주문 확정 (Firebase archive) — 대체음료 포함 저장 ────────────────────
-  const confirmOrder = async () => {
+  const deletePreset = (id) => {
+    setPresets(prev => prev.filter(p => p.id !== id));
+    showToast("프리셋 삭제됐어요");
+  };
+
+  // ── 주문 확정 (로컬 archive) ──────────────────────────────────────────────
+  const confirmOrder = () => {
     const active = rows.filter(r => r.active && r.menu?.trim() && r.menu !== "없음");
     if (!active.length) { showToast("확정할 주문이 없어요 😅"); return; }
     if (!window.confirm(`총 ${active.length}건을 오늘 날짜로 확정할까요?`)) return;
     const now = new Date();
-    const id  = uid();
-    await setDoc(doc(db, "archive", id), {
-      id,
-      date:   now.toISOString().slice(0, 10),
-      year:   now.getFullYear(),
-      month:  now.getMonth() + 1,
+    const entry = {
+      id: uid(),
+      date:  now.toISOString().slice(0, 10),
+      year:  now.getFullYear(),
+      month: now.getMonth() + 1,
       orders: active.map(r => ({
-        name:      r.name,
-        menu:      r.menu.trim(),
-        substitute: r.substitute?.trim() || "",  // 대체음료 포함
+        name:       r.name,
+        menu:       r.menu.trim(),
+        substitute: r.substitute?.trim() || "",
       })),
       order: Date.now(),
-    });
-    // 확정된 메인 메뉴만 menuHistory에 저장 (대체음료는 제외)
-    active.forEach(r => saveMenuHistory(r.menu));
+    };
+    setArchive(prev => [...prev, entry]);
+    // 확정된 메인 메뉴만 히스토리에 추가
+    active.forEach(r => addToHistory(r.menu));
     showToast(`✅ ${active.length}건 저장됐어요!`);
   };
 
+  // ── ✓ 버튼/Enter 확정 시 히스토리 저장 래퍼 ─────────────────────────────
+  // SwipeRow의 onUpdate를 감싸서 menu 변경 감지 (commit 시점에만)
+  const updateRowWithHistory = useCallback((id, patch) => {
+    updateRow(id, patch);
+    // menu 필드가 확정(비어있지 않음)될 때만 저장
+    if (patch.menu !== undefined && patch.menu.trim()) {
+      addToHistory(patch.menu);
+    }
+  }, [updateRow, addToHistory]);
+
+  // ── 요약 복사 ─────────────────────────────────────────────────────────────
   const copyText = () => {
-    const summ = getSummary(rows);
-    const lines = ["📋 주문 요약",
-      `총 ${rows.filter(r=>r.active).length}명 참여 / ${rows.filter(r=>r.active&&r.menu?.trim()&&r.menu!=="없음").length}명 주문`, ""];
+    const summ  = getSummary(rows);
+    const lines = [
+      "📋 주문 요약",
+      `총 ${rows.filter(r=>r.active).length}명 참여 / ${rows.filter(r=>r.active&&r.menu?.trim()&&r.menu!=="없음").length}명 주문`,
+      "",
+    ];
     summ.forEach(([m, c]) => lines.push(`${m}  ×${c}`));
-    // 대체음료 있는 사람 따로 표시
     const withSub = rows.filter(r => r.active && r.substitute?.trim());
     if (withSub.length) {
       lines.push("", "── 대체음료 ──");
       withSub.forEach(r => lines.push(`${r.name}: ${r.menu} → ${r.substitute}`));
     }
     navigator.clipboard.writeText(lines.join("\n")).then(() => showToast("클립보드에 복사됐어요! 📋"));
+  };
+
+  // ── 데이터 불러오기 (병합) ────────────────────────────────────────────────
+  const handleImport = (data) => {
+    if (data.archive?.length) {
+      setArchive(prev => {
+        const existIds = new Set(prev.map(e => e.id));
+        const newItems = data.archive.filter(e => !existIds.has(e.id));
+        return [...prev, ...newItems].sort((a,b) => a.order - b.order);
+      });
+    }
+    if (data.presets?.length) {
+      setPresets(prev => {
+        const existIds = new Set(prev.map(p => p.id));
+        const newItems = data.presets.filter(p => !existIds.has(p.id));
+        return [...prev, ...newItems].sort((a,b) => a.order - b.order);
+      });
+    }
+    if (data.menuHistory?.length) {
+      setMenuHistory(prev => {
+        const merged = new Set([...prev, ...data.menuHistory]);
+        return [...merged].sort((a,b) => a.localeCompare(b, "ko"));
+      });
+    }
   };
 
   // ── 통계 ─────────────────────────────────────────────────────────────────
@@ -674,7 +1002,6 @@ export default function App() {
   const personMonthly= useMemo(() => { if(!selPerson)return[]; const map={}; archive.forEach(e=>{if(e.year!==statYear)return;const cnt=e.orders.filter(o=>o.name===selPerson).length;if(cnt)map[e.month]=(map[e.month]||0)+cnt;}); return Array.from({length:12},(_,i)=>({label:`${i+1}월`,value:map[i+1]||0})); }, [archive,selPerson,statYear]);
 
   if (!authed) return <PasswordGate onUnlock={() => setAuthed(true)} />;
-  if (!archiveReady || !presetsReady || !menuHistoryReady) return <Loading />;
 
   const TABS = [["order","📝 입력"],["summary","📊 요약"],["stats","📈 통계"]];
 
@@ -687,12 +1014,12 @@ export default function App() {
         @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         @keyframes slideUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
         @keyframes toastIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
-        .toggle-wrap{position:relative;width:38px;height:22px;flex-shrink:0}
+        .toggle-wrap{position:relative;width:34px;height:20px;flex-shrink:0}
         .toggle-wrap input{opacity:0;width:0;height:0}
-        .toggle-slider{position:absolute;inset:0;border-radius:22px;cursor:pointer;background:#2d2d4a;transition:all .2s}
-        .toggle-slider::after{content:'';position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#555577;transition:all .2s}
+        .toggle-slider{position:absolute;inset:0;border-radius:20px;cursor:pointer;background:#2d2d4a;transition:all .2s}
+        .toggle-slider::after{content:'';position:absolute;left:3px;top:3px;width:14px;height:14px;border-radius:50%;background:#555577;transition:all .2s}
         .toggle-wrap input:checked+.toggle-slider{background:linear-gradient(135deg,#6c63ff,#48c6ef)}
-        .toggle-wrap input:checked+.toggle-slider::after{transform:translateX(16px);background:#fff}
+        .toggle-wrap input:checked+.toggle-slider::after{transform:translateX(14px);background:#fff}
         input{outline:none} button{cursor:pointer}
         .abtn{transition:all .15s} .abtn:hover{filter:brightness(1.15);transform:translateY(-1px)} .abtn:active{transform:translateY(0)}
         .tbtn{transition:all .18s} .chip{transition:all .15s} .chip:hover{filter:brightness(1.2)}
@@ -708,6 +1035,7 @@ export default function App() {
       {toast && <div style={{ position:"fixed", top:20, right:20, zIndex:9999, background:"#2d2d4a", border:"1px solid #6c63ff44", borderRadius:12, padding:"10px 18px", fontSize:13, color:"#c8c8ff", boxShadow:"0 4px 24px rgba(0,0,0,0.4)", animation:"toastIn .25s ease" }}>{toast}</div>}
 
       {showPreset && <PresetModal presets={presets} currentRows={rows} onSave={savePreset} onLoad={loadPreset} onDelete={deletePreset} onClose={() => setShowPreset(false)} />}
+      {showData   && <DataModal archive={archive} presets={presets} menuHistory={menuHistory} onImport={handleImport} onClose={() => setShowData(false)} />}
 
       <div style={{ maxWidth: 640, margin: "0 auto", padding: "0 16px 100px", position: "relative", zIndex: 1 }}>
 
@@ -723,13 +1051,16 @@ export default function App() {
                 {[[activeCount,"참여","#a09aff","rgba(108,99,255,0.12)","rgba(108,99,255,0.2)"],
                   [totalOrdered,"주문","#48c6ef","rgba(72,198,239,0.1)","rgba(72,198,239,0.18)"],
                   [archive.length,"기록","#f0a050","rgba(240,160,80,0.1)","rgba(240,160,80,0.18)"]].map(([v,l,c,bg,b]) => (
-                  <div key={l} style={{ textAlign:"center", background:bg, border:`1px solid ${b}`, borderRadius:10, padding:"6px 12px" }}>
+                  <div key={l} style={{ textAlign:"center", background:bg, border:`1px solid ${b}`, borderRadius:10, padding:"6px 10px" }}>
                     <div style={{ fontSize:18, fontWeight:800, color:c }}>{v}</div>
                     <div style={{ fontSize:9, color:"#7070a0" }}>{l}</div>
                   </div>
                 ))}
               </div>
-              <button onClick={logout} style={{ background:"none", border:"none", color:"#303050", fontSize:11, fontFamily:"inherit" }}>🔓 로그아웃</button>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button onClick={() => setShowData(true)} style={{ background:"none", border:"none", color:"#404060", fontSize:11, fontFamily:"inherit", cursor:"pointer" }}>💾 데이터</button>
+                <button onClick={logout} style={{ background:"none", border:"none", color:"#303050", fontSize:11, fontFamily:"inherit" }}>🔓 로그아웃</button>
+              </div>
             </div>
           </div>
           <div style={{ display:"flex", gap:4, marginTop:16, background:"rgba(255,255,255,0.04)", borderRadius:12, padding:4 }}>
@@ -746,7 +1077,7 @@ export default function App() {
             <div style={{ display:"flex", gap:8, marginBottom:16, alignItems:"center" }}>
               <button className="abtn" onClick={() => setShowPreset(true)}
                 style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 14px", borderRadius:10, border:"1px solid rgba(108,99,255,0.25)", background:"rgba(108,99,255,0.08)", color:"#8080cc", fontSize:12, fontWeight:700, fontFamily:"inherit", flexShrink:0 }}>
-                👥 프리셋{presets.length>0 && <span style={{ background:"rgba(108,99,255,0.3)", color:"#a09aff", borderRadius:10, padding:"1px 7px", fontSize:10 }}>{presets.length}</span>}
+                👥 프리셋{presets.length > 0 && <span style={{ background:"rgba(108,99,255,0.3)", color:"#a09aff", borderRadius:10, padding:"1px 7px", fontSize:10 }}>{presets.length}</span>}
               </button>
               {presets.length > 0 && (
                 <div style={{ display:"flex", gap:5, overflowX:"auto", flex:1 }}>
@@ -759,12 +1090,18 @@ export default function App() {
 
             {/* 컬럼 헤더 */}
             {rows.length > 0 && (
-              <div style={{ display:"grid", gridTemplateColumns:"22px 38px 1fr 1fr 28px", gap:6, padding:"0 12px 8px", fontSize:10, letterSpacing:"1px", textTransform:"uppercase", color:"#5050a0" }}>
-                <div/><div>ON</div><div>이름</div><div>메뉴 &nbsp;<span style={{color:"#3a3a6a"}}>✓=확정 ▼=이력 🔄=대체</span></div><div/>
+              <div style={{ display:"grid", gridTemplateColumns: isMobile.current ? "22px 34px 1fr 1fr" : "22px 34px 1fr 1fr 28px 24px", gap:6, padding:"0 10px 8px", fontSize:10, letterSpacing:"1px", textTransform:"uppercase", color:"#5050a0" }}>
+                <div/><div>ON</div><div>이름</div>
+                <div>{isMobile.current ? "메뉴 (→대체 ←삭제)" : "메뉴  ✓=확정 ▼=이력 🔄=대체"}</div>
+                {!isMobile.current && <><div/><div/></>}
               </div>
             )}
 
-            {rows.length > 1 && <div style={{ fontSize:11, color:"#3a3a6a", textAlign:"center", marginBottom:8 }}>☰ 길게 눌러 드래그 정렬 &nbsp;|&nbsp; ← 스와이프해서 삭제</div>}
+            {rows.length > 1 && (
+              <div style={{ fontSize:11, color:"#3a3a6a", textAlign:"center", marginBottom:8 }}>
+                {isMobile.current ? "☰ 꾹 눌러 정렬  |  → 스와이프 대체  |  ← 스와이프 삭제" : "☰ 드래그 정렬  |  ← 스와이프 삭제"}
+              </div>
+            )}
 
             {rows.length === 0
               ? <div style={{ textAlign:"center", padding:"40px 20px", color:"#303050", lineHeight:2 }}>
@@ -774,11 +1111,16 @@ export default function App() {
                 </div>
               : rows.map((row, idx) => (
                   <SwipeRow key={row.id} row={row} idx={idx}
-                    onUpdate={updateRow} onDelete={deleteRow}
-                    onDragStart={handleDragStart} onDragEnter={handleDragEnter} onDragEnd={handleDragEnd}
-                    isDragging={draggingIdx===idx} isOver={overIndex===idx&&draggingIdx!==idx}
+                    onUpdate={updateRowWithHistory}
+                    onDelete={deleteRow}
+                    onDragStart={handleDragStart}
+                    onDragEnter={handleDragEnter}
+                    onDragEnd={handleDragEnd}
+                    isDragging={draggingIdx===idx}
+                    isOver={overIndex===idx&&draggingIdx!==idx}
                     menuOptions={menuOptions}
-                    onDeleteHistory={handleDeleteHistory}
+                    onDeleteHistory={deleteFromHistory}
+                    isMobile={isMobile.current}
                   />
                 ))
             }
@@ -791,7 +1133,7 @@ export default function App() {
               <button className="abtn" onClick={() => setView("summary")} style={{ flex:2, padding:"11px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#6c63ff,#4a9eff)", color:"#fff", fontSize:12, fontWeight:700, fontFamily:"inherit", boxShadow:"0 4px 16px rgba(108,99,255,0.3)" }}>📊 요약 보기 →</button>
             </div>
             <button className="abtn" onClick={confirmOrder} style={{ width:"100%", marginTop:8, padding:"15px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#f0a050,#e07030)", color:"#fff", fontSize:15, fontWeight:800, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(240,140,60,0.35)" }}>
-              ✅ 주문 확정 & 아카이브 저장
+              ✅ 주문 확정 & 로컬 저장
             </button>
           </div>
         )}
@@ -808,7 +1150,7 @@ export default function App() {
               </div>
             </div>
             <div style={{ fontSize:10, letterSpacing:"1.5px", textTransform:"uppercase", color:"#5050a0", marginBottom:10 }}>메뉴별 집계</div>
-            {summ.length===0
+            {summ.length === 0
               ? <div style={{ textAlign:"center", padding:"32px", color:"#404060", fontSize:13 }}>아직 주문이 없어요</div>
               : <div style={{ display:"flex", flexDirection:"column", gap:7, marginBottom:14 }}>
                   {summ.map(([menu,cnt],i) => (
@@ -825,9 +1167,7 @@ export default function App() {
                 </div>
             }
             <button className="abtn" onClick={copyText} style={{ width:"100%", padding:"14px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#6c63ff,#48c6ef)", color:"#fff", fontSize:14, fontWeight:700, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(108,99,255,0.3)", marginBottom:8 }}>📋 요약 텍스트 복사</button>
-            <button className="abtn" onClick={confirmOrder} style={{ width:"100%", padding:"14px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#f0a050,#e07030)", color:"#fff", fontSize:14, fontWeight:700, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(240,140,60,0.3)" }}>✅ 주문 확정 & 아카이브 저장</button>
-
-            {/* 개인별 목록 (대체음료 포함) */}
+            <button className="abtn" onClick={confirmOrder} style={{ width:"100%", padding:"14px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#f0a050,#e07030)", color:"#fff", fontSize:14, fontWeight:700, fontFamily:"inherit", boxShadow:"0 4px 20px rgba(240,140,60,0.3)" }}>✅ 주문 확정 & 로컬 저장</button>
             <div style={{ fontSize:10, letterSpacing:"1.5px", textTransform:"uppercase", color:"#5050a0", margin:"18px 0 8px" }}>개인별 목록</div>
             <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
               {rows.map(r => (
@@ -851,7 +1191,7 @@ export default function App() {
         {/* ══ 통계 ══ */}
         {view === "stats" && (
           <div style={{ animation:"fadeIn .3s ease" }}>
-            {archive.length===0
+            {archive.length === 0
               ? <div style={{ textAlign:"center", padding:"60px 20px", color:"#404060", lineHeight:2 }}>
                   <div style={{ fontSize:48, marginBottom:16 }}>📭</div>
                   <div style={{ fontSize:15, color:"#5050a0" }}>아직 아카이브 데이터가 없어요</div>
@@ -947,23 +1287,6 @@ export default function App() {
           </div>
         )}
       </div>
-
-      {/* ✅ 디버그 패널 – 여기에 추가 */}
-      {import.meta.env.DEV && (
-        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0,
-          background: "rgba(0,0,0,0.9)", color: "#00ff88", fontSize: 10,
-          fontFamily: "monospace", padding: "6px 12px",
-          maxHeight: 100, overflowY: "auto", zIndex: 99999,
-          borderTop: "1px solid #222" }}>
-          menuHistory: {menuHistory.length}개 &nbsp;|&nbsp;
-          menuOptions: {menuOptions.length}개 &nbsp;|&nbsp;
-          rows: {rows.length}개
-          <pre style={{ margin: "2px 0 0", fontSize: 9, color: "#88ffcc" }}>
-            {JSON.stringify(menuOptions, null, 1)}
-          </pre>
-        </div>
-      )}
-
     </div>
   );
 }
