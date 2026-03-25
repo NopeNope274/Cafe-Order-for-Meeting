@@ -108,8 +108,9 @@ const exportMD = (archive, presets, menuHistory) => {
 };
 
 function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, rowStyle }) {
-  const [local, setLocal] = useState(value);
-  const [open,  setOpen]  = useState(false);
+  const [local,   setLocal]   = useState(value);
+  const [open,    setOpen]    = useState(false);
+  const [focused, setFocused] = useState(false);
   const wrapRef = useRef(null);
 
   useEffect(() => { setLocal(value); }, [value]);
@@ -138,10 +139,12 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
           value={local}
           onChange={e => { setLocal(e.target.value); if (e.target.value) setOpen(true); }}
           onKeyDown={e => { if (e.key === "Enter") { commit(local); e.target.blur(); } }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => { setFocused(false); commit(local); }}
           placeholder={placeholder}
-          style={{ ...rowStyle, fontSize: "16px", paddingRight: local ? "22px" : "4px", minWidth: 0 }}
+          style={{ ...rowStyle, fontSize: "16px", paddingRight: (focused && local) ? "22px" : "2px", minWidth: 0 }}
         />
-        {local && (
+        {focused && local && (
           <span
             onMouseDown={e => { e.preventDefault(); setLocal(""); onChange(""); }}
             onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); setLocal(""); onChange(""); }}
@@ -151,19 +154,14 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
       </div>
 
       <button
-        onMouseDown={e => { e.preventDefault(); commit(local); }}
-        onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); commit(local); }}
-        style={{ flexShrink: 0, background: "none", border: "none", color: local.trim() ? "#48c6ef" : "#2a2a4a", fontSize: 15, cursor: "pointer", padding: "2px 3px", lineHeight: 1, touchAction: "none" }}>✓</button>
-
-      <button
         onMouseDown={e => { e.preventDefault(); setOpen(o => !o); }}
         onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); setOpen(o => !o); }}
-        style={{ flexShrink: 0, background: "none", border: "none", color: open ? "#6c63ff" : "#3a3a6a", fontSize: 11, cursor: "pointer", padding: "2px 3px", lineHeight: 1, touchAction: "none", transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▼</button>
+        style={{ flexShrink: 0, background: "none", border: "none", color: open ? "#6c63ff" : "#3a3a6a", fontSize: 11, cursor: "pointer", padding: "2px 4px", lineHeight: 1, touchAction: "none", transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▼</button>
 
       {open && (
         <div
           onTouchStart={e => e.stopPropagation()}
-          onTouchMove={e => { e.stopPropagation(); }}
+          onTouchMove={e => e.stopPropagation()}
           onTouchEnd={e => e.stopPropagation()}
           style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, minWidth: "180px", width: "max-content", maxWidth: "75vw", background: "#13132a", border: "1px solid #3d3d6a", borderRadius: 12, zIndex: 9999, maxHeight: 220, overflowY: "auto", boxShadow: "0 8px 40px rgba(0,0,0,0.95)", WebkitOverflowScrolling: "touch" }}>
           {filteredOptions.length === 0
@@ -192,20 +190,24 @@ function MenuInput({ value, onChange, options, onDeleteHistory, placeholder, row
 }
 
 function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isOver, menuOptions, onDeleteHistory, isMobile }) {
-  const touch = useRef(isMobile);
+  const touch   = useRef(isMobile);
   const cardRef = useRef(null);
-  const startX = useRef(null);
-  const startY = useRef(null);
-  const swiped = useRef(false);
+  const startX  = useRef(null);
+  const startY  = useRef(null);
+  const swiped  = useRef(false);
+  const dir     = useRef(null); // "left" | "right"
 
-  const [offsetX,      setOffsetX]      = useState(0);
-  const [swipeStage,   setSwipeStage]   = useState(0); // 0=기본 1=🗑노출 2=삭제확인
-  const [swiping,      setSwiping]      = useState(false);
-  const [hovered,      setHovered]      = useState(false);
-  const [showSub,      setShowSub]      = useState(!!row.substitute);
+  // stage: 0=기본 / "del1"=삭제버튼 노출 / "del2"=삭제직전 / "sub1"=대체버튼 노출 / "sub2"=대체입력 열림
+  const [stage,   setStage]   = useState(0);
+  const [offsetX, setOffsetX] = useState(0);
+  const [swiping, setSwiping] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [showSub, setShowSub] = useState(!!row.substitute);
 
-  const STAGE1 = 72;
-  const STAGE2 = 160;
+  const DEL1 = 70;   // ← 1단계: 🗑 버튼 노출
+  const DEL2 = 160;  // ← 2단계: 삭제
+  const SUB1 = 70;   // → 1단계: 대체 버튼 노출
+  const SUB2 = 160;  // → 2단계: 대체 입력 열림
 
   useEffect(() => { if (row.substitute) setShowSub(true); }, [row.substitute]);
 
@@ -217,6 +219,7 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
       startX.current = e.touches[0].clientX;
       startY.current = e.touches[0].clientY;
       swiped.current = false;
+      dir.current = null;
       setSwiping(false);
     };
 
@@ -226,42 +229,63 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
       const dy = e.touches[0].clientY - startY.current;
       if (!swiped.current && Math.abs(dy) > Math.abs(dx)) return;
       if (Math.abs(dx) < 8) return;
-      // 오른쪽(→) 스와이프는 무시 - 브라우저 뒤로가기 방지
-      if (dx > 0 && !swiped.current) return;
+      if (!dir.current) dir.current = dx < 0 ? "left" : "right";
       swiped.current = true;
       setSwiping(true);
       e.preventDefault();
-      const base = swipeStage === 1 ? -STAGE1 : 0;
-      const raw = dx + base;
-      setOffsetX(Math.min(0, Math.max(-(STAGE2 + 20), raw)));
+
+      if (dir.current === "left") {
+        const base = (stage === "del1") ? -DEL1 : 0;
+        setOffsetX(Math.min(0, Math.max(-(DEL2 + 24), dx + base)));
+      } else {
+        const base = (stage === "sub1") ? SUB1 : 0;
+        setOffsetX(Math.max(0, Math.min(SUB2 + 24, dx + base)));
+      }
     };
 
     const onEnd = () => {
       if (!swiped.current) { setSwiping(false); return; }
-      if (offsetX < -STAGE2 * 0.75) {
-        onDelete(row.id);
-      } else if (offsetX < -(STAGE1 * 0.6)) {
-        setOffsetX(-STAGE1);
-        setSwipeStage(1);
+
+      if (dir.current === "left") {
+        if (stage === "sub1" || stage === "sub2") {
+          // 대체 열려있을 때 ← 짧게 → 대체 닫기
+          setOffsetX(0); setStage(0);
+        } else if (offsetX < -(DEL2 * 0.7)) {
+          onDelete(row.id);
+        } else if (offsetX < -(DEL1 * 0.5)) {
+          setOffsetX(-DEL1); setStage("del1");
+        } else {
+          setOffsetX(0); setStage(0);
+        }
       } else {
-        setOffsetX(0);
-        setSwipeStage(0);
+        if (stage === "del1") {
+          // 삭제 열려있을 때 → 짧게 → 삭제 닫기
+          setOffsetX(0); setStage(0);
+        } else if (offsetX > SUB2 * 0.7) {
+          setOffsetX(0); setStage("sub2"); setShowSub(true);
+        } else if (offsetX > SUB1 * 0.5) {
+          setOffsetX(SUB1); setStage("sub1");
+        } else {
+          setOffsetX(0); setStage(0);
+        }
       }
+
       setSwiping(false);
       startX.current = null;
+      dir.current = null;
     };
 
     el.addEventListener("touchstart", onStart, { passive: true });
-    el.addEventListener("touchmove", onMove, { passive: false });
-    el.addEventListener("touchend", onEnd, { passive: true });
+    el.addEventListener("touchmove",  onMove,  { passive: false });
+    el.addEventListener("touchend",   onEnd,   { passive: true });
     return () => {
       el.removeEventListener("touchstart", onStart);
-      el.removeEventListener("touchmove", onMove);
-      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchmove",  onMove);
+      el.removeEventListener("touchend",   onEnd);
     };
-  }, [swipeStage, offsetX, row.id, onDelete]);
+  }, [stage, offsetX, row.id, onDelete]);
 
-  const resetSwipe = () => { setOffsetX(0); setSwipeStage(0); };
+  const resetSwipe = () => { setOffsetX(0); setStage(0); };
 
   const dragProps = {
     onPointerDown: e => e.currentTarget.closest("[data-row]").setAttribute("draggable", "true"),
@@ -270,6 +294,10 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
 
   const bc = isOver ? "rgba(108,99,255,0.6)" : row.active ? "rgba(108,99,255,0.15)" : "rgba(255,255,255,0.04)";
   const gridCols = touch.current ? "20px 34px 80px 1fr" : "20px 34px 90px 1fr 28px 24px";
+
+  // 스와이프로 노출되는 버튼들 (배경 없음, 버튼만)
+  const showDelBtn = touch.current && (stage === "del1" || (swiping && dir.current === "left" && offsetX < -DEL1 * 0.4));
+  const showSubBtn = touch.current && (stage === "sub1" || (swiping && dir.current === "right" && offsetX > SUB1 * 0.4));
 
   return (
     <div
@@ -282,37 +310,34 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
       onMouseLeave={() => { if (!touch.current) setHovered(false); }}
       style={{ position: "relative", borderRadius: 12, marginBottom: 6, userSelect: "none", opacity: isDragging ? 0.35 : 1 }}
     >
-      {/* 삭제 배경 - 2단계 */}
-      {touch.current && (
-        <div style={{
-          position: "absolute", right: 0, top: 0, height: showSub ? "calc(100% - 50px)" : "100%",
-          width: swipeStage === 1 ? STAGE1 : STAGE2,
-          background: swipeStage === 1
-            ? "linear-gradient(90deg,transparent,rgba(255,80,80,0.85))"
-            : "linear-gradient(90deg,transparent,rgba(220,30,30,1))",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          borderRadius: swipeStage === 1 ? "0 12px 12px 0" : "0 12px 12px 0",
-          transition: swiping ? "none" : "width .2s, background .2s",
-          zIndex: 0,
-        }}>
-          {swipeStage === 1 ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: "#fff" }}>
-              <span style={{ fontSize: 20 }}>🗑</span>
-              <span style={{ fontSize: 9, fontWeight: 700 }}>한번 더→</span>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: "#fff" }}>
-              <span style={{ fontSize: 20 }}>💥</span>
-              <span style={{ fontSize: 9, fontWeight: 700 }}>삭제!</span>
-            </div>
-          )}
+      {/* 삭제 버튼 (오른쪽 고정, 배경 없음) */}
+      {showDelBtn && (
+        <div style={{ position: "absolute", right: 0, top: 0, bottom: showSub ? "calc(100% - 46px)" : 0, width: DEL1, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1, borderRadius: "0 12px 12px 0" }}>
+          <button
+            onTouchEnd={e => { e.stopPropagation(); e.preventDefault(); onDelete(row.id); }}
+            style={{ background: "none", border: "none", color: "#ff6080", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 1, padding: "6px 10px", touchAction: "none" }}>
+            <span style={{ fontSize: 22 }}>🗑</span>
+            <span style={{ fontSize: 9, fontWeight: 700, color: "#ff6080" }}>삭제</span>
+          </button>
+        </div>
+      )}
+
+      {/* 대체 버튼 (왼쪽 고정, 배경 없음) */}
+      {showSubBtn && (
+        <div style={{ position: "absolute", left: 0, top: 0, bottom: showSub ? "calc(100% - 46px)" : 0, width: SUB1, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1, borderRadius: "12px 0 0 12px" }}>
+          <button
+            onTouchEnd={e => { e.stopPropagation(); e.preventDefault(); setOffsetX(0); setStage("sub2"); setShowSub(true); }}
+            style={{ background: "none", border: "none", color: "#48c6ef", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 1, padding: "6px 10px", touchAction: "none" }}>
+            <span style={{ fontSize: 22 }}>🔄</span>
+            <span style={{ fontSize: 9, fontWeight: 700, color: "#48c6ef" }}>대체</span>
+          </button>
         </div>
       )}
 
       {/* 메인 카드 */}
       <div
         ref={cardRef}
-        onClick={swipeStage > 0 ? resetSwipe : undefined}
+        onClick={stage !== 0 ? resetSwipe : undefined}
         style={{
           display: "grid", gridTemplateColumns: gridCols,
           gap: 6, alignItems: "center",
@@ -359,32 +384,6 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
         )}
       </div>
 
-      {/* 대체음료 탭 - 모바일은 항상 탭으로 토글 */}
-      {touch.current && (
-        <div
-          style={{
-            transform: `translateX(${offsetX}px)`,
-            transition: swiping ? "none" : "transform .25s ease",
-          }}>
-          <button
-            onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); setShowSub(s => !s); }}
-            onClick={() => setShowSub(s => !s)}
-            style={{
-              width: "100%", padding: "6px 10px", border: "1px solid rgba(72,198,239,0.2)",
-              borderTop: showSub ? "none" : "1px solid rgba(72,198,239,0.2)",
-              borderRadius: showSub ? "0" : "0 0 12px 12px",
-              background: showSub ? "rgba(72,198,239,0.1)" : "rgba(72,198,239,0.04)",
-              color: "#48c6ef", fontSize: 11, cursor: "pointer", fontFamily: "inherit",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-              touchAction: "none",
-            }}>
-            <span style={{ opacity: 0.7 }}>🔄</span>
-            <span>{showSub ? "대체메뉴 닫기 ▲" : "대체메뉴 추가 ▼"}</span>
-            {row.substitute?.trim() && <span style={{ background: "rgba(72,198,239,0.2)", borderRadius: 8, padding: "1px 7px", fontSize: 10 }}>{row.substitute}</span>}
-          </button>
-        </div>
-      )}
-
       {/* 대체음료 입력창 */}
       {showSub && (
         <div
@@ -393,11 +392,10 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           onTouchEnd={e => e.stopPropagation()}
           style={{
             display: "grid",
-            gridTemplateColumns: touch.current ? "auto 1fr 24px" : "20px 34px auto 1fr 28px 24px",
+            gridTemplateColumns: touch.current ? "auto 1fr 28px" : "20px 34px auto 1fr 28px 24px",
             gap: 6, alignItems: "center",
             background: "rgba(72,198,239,0.05)",
-            border: "1px solid rgba(72,198,239,0.2)",
-            borderTop: "none",
+            border: "1px solid rgba(72,198,239,0.2)", borderTop: "none",
             borderRadius: "0 0 12px 12px",
             padding: "8px 10px",
             transform: `translateX(${offsetX}px)`,
@@ -405,17 +403,17 @@ function SwipeRow({ row, idx, onUpdate, onDelete, onDragStart, onDragEnter, onDr
           }}>
           {touch.current ? (
             <>
-              <div style={{ fontSize: 11, color: "#48c6ef", opacity: 0.8, whiteSpace: "nowrap", paddingLeft: 4 }}>↪ 대체</div>
+              <div style={{ fontSize: 11, color: "#48c6ef", opacity: 0.8, whiteSpace: "nowrap", paddingLeft: 2 }}>↪ 대체</div>
               <MenuInput
                 value={row.substitute || ""}
                 onChange={v => onUpdate(row.id, { substitute: v })}
                 options={menuOptions}
                 onDeleteHistory={onDeleteHistory}
-                placeholder="대체 메뉴 입력/선택"
+                placeholder="대체 메뉴"
                 rowStyle={{ background: "transparent", border: "none", fontSize: "15px", color: "#70c8d8", fontFamily: "inherit", width: "100%", outline: "none", minWidth: 0 }}
               />
               <button
-                onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); onUpdate(row.id, { substitute: "" }); setShowSub(false); }}
+                onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); onUpdate(row.id, { substitute: "" }); setShowSub(false); setStage(0); setOffsetX(0); }}
                 style={{ background: "none", border: "none", color: "#48c6ef", fontSize: 14, cursor: "pointer", opacity: 0.6, padding: "4px", touchAction: "none" }}>✕</button>
             </>
           ) : (
@@ -977,7 +975,7 @@ export default function App() {
 
             {rows.length > 1 && (
               <div style={{ fontSize:11, color:"#3a3a6a", textAlign:"center", marginBottom:8 }}>
-                {isMobile.current ? "☰ 꾹 눌러 정렬  |  ← 짧게=🗑노출  길게=삭제" : "☰ 드래그 정렬  |  ← 스와이프 삭제"}
+                {isMobile.current ? "☰ 꾹 눌러 정렬  |  → 대체  |  ← 삭제 (2단계)" : "☰ 드래그 정렬  |  🔄 대체  |  × 삭제"}
               </div>
             )}
 
