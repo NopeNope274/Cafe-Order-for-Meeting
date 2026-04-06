@@ -95,11 +95,23 @@ const mergeMenuHistory = (current, incoming) => {
 
 const driveUrlToDirectLink = (url) => {
   if (!url) return "";
-  const reg = /\/file\/d\/([a-zA-Z0-9_-]{25,})|id=([a-zA-Z0-9_-]{25,})/;
-  const match = url.match(reg);
-  const id = match ? (match[1] || match[2]) : url;
-  if (id && id.length >= 25) return `https://drive.google.com/uc?export=download&id=${id}`;
-  return url; // 드라이브 형식이 아니면 일단 그대로 반환
+  // 1. /file/d/ID/... 또는 id=ID 형식 추출
+  const fileReg = /\/file\/d\/([a-zA-Z0-9_-]+)|id=([a-zA-Z0-9_-]+)/;
+  const fileMatch = url.match(fileReg);
+  if (fileMatch) {
+    const id = fileMatch[1] || fileMatch[2];
+    return `https://drive.google.com/uc?export=download&id=${id}`;
+  }
+  // 2. /folders/ID 형식 (이 경우는 사실 JSON 파일이 아니므로 주의가 필요하지만, 일단 ID는 추출하도록 함)
+  const folderReg = /\/folders\/([a-zA-Z0-9_-]+)/;
+  const folderMatch = url.match(folderReg);
+  if (folderMatch) {
+    const id = folderMatch[1];
+    // 폴더 URL은 직접 다운로드 링크가 되지 않으므로 사용자에게 알리거나 처리 방식을 결정해야 함
+    // 여기서는 일단 ID를 반환하거나 그대로 둠
+    return url;
+  }
+  return url;
 };
 
 const exportMD = (archive, presets, menuHistory) => {
