@@ -552,7 +552,7 @@ function PresetModal({ presets, currentRows, onSave, onLoad, onDelete, onClose }
         </div>
         {mode === "save" && (
           <div>
-            <p style={{ fontSize: 12, color: "#5060a0", marginBottom: 12 }}>멤버 {currentRows.length}명의 이름과 참여 상태를 저장해요.<br /><span style={{ color: "#404060" }}>메뉴 내용은 저장되지 않아요.</span></p>
+            <p style={{ fontSize: 12, color: "#5060a0", marginBottom: 12 }}>멤버 {currentRows.length}명의 이름과 참여 상태를 저장해요.<br /><span style={{ color: "#8080cc" }}>입력된 메뉴도 함께 저장됩니다.</span></p>
             <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
               {currentRows.length === 0
                 ? <div style={{ fontSize: 12, color: "#404060", textAlign: "center" }}>현재 멤버가 없어요.</div>
@@ -607,9 +607,24 @@ function DataModal({ archive, presets, menuHistory, onImport, onClearMenuHistory
   const [status, setStatus] = useState("");
   const [showUrlSet, setShowUrlSet] = useState(false);
   const [tempUrls, setTempUrls] = useState(syncUrls || { presets: "", menu: "" });
+  const [activeAction, setActiveAction] = useState(null);
   const fileRef = useRef(null);
 
   useEffect(() => { setTempUrls(syncUrls); }, [syncUrls]);
+
+  const handleCopyAction = (type) => {
+    setActiveAction(`copy-${type}`);
+    onCopy(type);
+    setTimeout(() => setActiveAction(null), 1500);
+  };
+
+  const handleUrlSyncAction = async (type) => {
+    const success = await onSync(type);
+    if (success) {
+      setActiveAction(type);
+      setTimeout(() => setActiveAction(null), 1500);
+    }
+  };
 
   const handleImportFile = (e) => {
     const file = e.target.files?.[0];
@@ -637,8 +652,11 @@ function DataModal({ archive, presets, menuHistory, onImport, onClearMenuHistory
       const text = await navigator.clipboard.readText();
       if (!text.trim()) { setStatus("❌ 클립보드가 비어있어요."); return; }
       const data = JSON.parse(text);
-      if (onSync(type, data)) {
+      const success = await onSync(type, data);
+      if (success) {
         setStatus(`✅ ${type === "presets" ? "프리셋" : "메뉴 목록"} 동기화 완료!`);
+        setActiveAction(`sync-${type}`);
+        setTimeout(() => setActiveAction(null), 1500);
       } else {
         setStatus("❌ 데이터 형식이 올바르지 않아요.");
       }
@@ -745,16 +763,16 @@ function DataModal({ archive, presets, menuHistory, onImport, onClearMenuHistory
               ) : (
                 <div style={{ display: "flex", gap: 8 }}>
                   <button
-                    onClick={() => onSync("presets-url")}
+                    onClick={() => handleUrlSyncAction("presets-url")}
                     disabled={!syncUrls.presets}
-                    style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: syncUrls.presets ? "linear-gradient(135deg,rgba(108,99,255,0.3),rgba(72,198,239,0.2))" : "rgba(255,255,255,0.05)", color: syncUrls.presets ? "#a09aff" : "#404060", fontSize: 12, fontWeight: 700 }}>
-                    👥 프리셋 업데이트
+                    style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: activeAction === "presets-url" ? "#80e0a0" : syncUrls.presets ? "linear-gradient(135deg,rgba(108,99,255,0.3),rgba(72,198,239,0.2))" : "rgba(255,255,255,0.05)", color: activeAction === "presets-url" ? "#000" : syncUrls.presets ? "#a09aff" : "#404060", fontSize: 12, fontWeight: 700, transition: "all 0.2s" }}>
+                    {activeAction === "presets-url" ? "✅ 업데이트 됨" : "👥 프리셋 업데이트"}
                   </button>
                   <button
-                    onClick={() => onSync("menu-url")}
+                    onClick={() => handleUrlSyncAction("menu-url")}
                     disabled={!syncUrls.menu}
-                    style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: syncUrls.menu ? "linear-gradient(135deg,rgba(72,198,239,0.3),rgba(108,99,255,0.2))" : "rgba(255,255,255,0.05)", color: syncUrls.menu ? "#48c6ef" : "#404060", fontSize: 12, fontWeight: 700 }}>
-                    ☕ 메뉴 업데이트
+                    style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: activeAction === "menu-url" ? "#80e0a0" : syncUrls.menu ? "linear-gradient(135deg,rgba(72,198,239,0.3),rgba(108,99,255,0.2))" : "rgba(255,255,255,0.05)", color: activeAction === "menu-url" ? "#000" : syncUrls.menu ? "#48c6ef" : "#404060", fontSize: 12, fontWeight: 700, transition: "all 0.2s" }}>
+                    {activeAction === "menu-url" ? "✅ 업데이트 됨" : "☕ 메뉴 업데이트"}
                   </button>
                 </div>
               )}
@@ -766,15 +784,15 @@ function DataModal({ archive, presets, menuHistory, onImport, onClearMenuHistory
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 10, color: "#5060a0", marginBottom: 4 }}>👥 프리셋 클립보드</div>
                   <div style={{ display: "flex", gap: 4 }}>
-                    <button onClick={() => onCopy("presets")} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.04)", color: "#8080a0", fontSize: 11 }}>복사</button>
-                    <button onClick={() => handleClipboardSync("presets")} style={{ flex: 1.5, padding: "9px", borderRadius: 8, border: "none", background: "rgba(108,99,255,0.15)", color: "#a09aff", fontSize: 11, fontWeight: 700 }}>동기화</button>
+                    <button onClick={() => handleCopyAction("presets")} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: activeAction === 'copy-presets' ? "#80e0a0" : "rgba(255,255,255,0.04)", color: activeAction === 'copy-presets' ? "#000" : "#8080a0", fontSize: 11, fontWeight: activeAction === 'copy-presets' ? 700 : 400, transition: "all 0.2s" }}>{activeAction === 'copy-presets' ? "✅ 완료" : "복사"}</button>
+                    <button onClick={() => handleClipboardSync("presets")} style={{ flex: 1.5, padding: "9px", borderRadius: 8, border: "none", background: activeAction === 'sync-presets' ? "#80e0a0" : "rgba(108,99,255,0.15)", color: activeAction === 'sync-presets' ? "#000" : "#a09aff", fontSize: 11, fontWeight: 700, transition: "all 0.2s" }}>{activeAction === 'sync-presets' ? "✅ 완료" : "동기화"}</button>
                   </div>
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 10, color: "#5060a0", marginBottom: 4 }}>☕ 메뉴 클립보드</div>
                   <div style={{ display: "flex", gap: 4 }}>
-                    <button onClick={() => onCopy("menu")} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.04)", color: "#8080a0", fontSize: 11 }}>복사</button>
-                    <button onClick={() => handleClipboardSync("menu")} style={{ flex: 1.5, padding: "9px", borderRadius: 8, border: "none", background: "rgba(72,198,239,0.15)", color: "#48c6ef", fontSize: 11, fontWeight: 700 }}>동기화</button>
+                    <button onClick={() => handleCopyAction("menu")} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: activeAction === 'copy-menu' ? "#80e0a0" : "rgba(255,255,255,0.04)", color: activeAction === 'copy-menu' ? "#000" : "#8080a0", fontSize: 11, fontWeight: activeAction === 'copy-menu' ? 700 : 400, transition: "all 0.2s" }}>{activeAction === 'copy-menu' ? "✅ 완료" : "복사"}</button>
+                    <button onClick={() => handleClipboardSync("menu")} style={{ flex: 1.5, padding: "9px", borderRadius: 8, border: "none", background: activeAction === 'sync-menu' ? "#80e0a0" : "rgba(72,198,239,0.15)", color: activeAction === 'sync-menu' ? "#000" : "#48c6ef", fontSize: 11, fontWeight: 700, transition: "all 0.2s" }}>{activeAction === 'sync-menu' ? "✅ 완료" : "동기화"}</button>
                   </div>
                 </div>
               </div>
@@ -907,6 +925,21 @@ export default function App() {
     setMenuHistory(prev => prev.filter(m => m !== menuName));
   }, []);
 
+  // ── 주문 기록에서 불러오기 ──────────────────────────────────────────────────
+  const loadArchiveEntry = (entry) => {
+    if (window.confirm(`${entry.date}의 주문 기록을 불러올까요?\n(현재 목록이 덮어씌워집니다)`)) {
+      setRows(entry.orders.map(o => ({
+        id: uid(),
+        name: o.name,
+        menu: o.menu,
+        substitute: o.substitute || "",
+        active: true
+      })));
+      setView("order");
+      showToast(`📂 ${entry.date} 주문을 불러왔어요!`);
+    }
+  };
+
   // ── 드래그 정렬 (터치 + 마우스 통합) ────────────────────────────────────────
   const handleDragStart = useCallback(idx => { dragIdx.current = idx; setDraggingIdx(idx); }, []);
   const handleDragEnter = useCallback(idx => { overIdx.current = idx; setOverIndex(idx); }, []);
@@ -995,7 +1028,7 @@ export default function App() {
       id: uid(),
       name,
       savedAt: new Date().toISOString().slice(0, 10),
-      members: rows.map(r => ({ name: r.name, active: r.active })),
+      members: rows.map(r => ({ name: r.name, active: r.active, menu: r.menu, substitute: r.substitute })),
       order: Date.now(),
     };
     setPresets(prev => [...prev, newPreset].sort((a, b) => a.order - b.order));
@@ -1003,7 +1036,7 @@ export default function App() {
   };
 
   const loadPreset = (p) => {
-    setRows(p.members.map(m => ({ id: uid(), name: m.name, menu: "", substitute: "", active: m.active })));
+    setRows(p.members.map(m => ({ id: uid(), name: m.name, menu: m.menu || "", substitute: m.substitute || "", active: m.active })));
     showToast(`📂 '${p.name}' 불러왔어요!`);
   };
 
@@ -1439,10 +1472,13 @@ export default function App() {
                 {statMode === "log" && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {[...archive].sort((a, b) => b.order - a.order).map(entry => (
-                      <div key={entry.id} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: "14px 16px" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                      <div key={entry.id} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: "14px 16px", position: "relative" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10, alignItems: "center" }}>
                           <span style={{ fontSize: 13, color: "#6c63ff", fontWeight: 700 }}>{entry.date}</span>
-                          <span style={{ fontSize: 11, color: "#5060a0", background: "rgba(108,99,255,0.1)", padding: "2px 8px", borderRadius: 8 }}>{entry.orders.length}건</span>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button onClick={() => loadArchiveEntry(entry)} style={{ padding: "4px 10px", borderRadius: 8, border: "none", background: "rgba(108,99,255,0.15)", color: "#a09aff", fontSize: 11, cursor: "pointer", fontWeight: 700, transition: "all 0.15s" }} onMouseEnter={e => e.currentTarget.style.background = "rgba(108,99,255,0.25)"} onMouseLeave={e => e.currentTarget.style.background = "rgba(108,99,255,0.15)"}>이 주문 불러오기 📂</button>
+                            <span style={{ fontSize: 11, color: "#5060a0", background: "rgba(108,99,255,0.1)", padding: "4px 8px", borderRadius: 8, display: "flex", alignItems: "center" }}>{entry.orders.length}건</span>
+                          </div>
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                           {entry.orders.map((o, i) => (
