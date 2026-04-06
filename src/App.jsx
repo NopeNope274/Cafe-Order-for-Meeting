@@ -76,6 +76,32 @@ const exportJSON = (archive, presets, menuHistory) => {
   URL.revokeObjectURL(url);
 };
 
+// ── 클립보드/파일 공유용 헬퍼 ────────────────────────────────────────────────
+const copyToClipboard = (data, msg, onShowToast) => {
+  const str = JSON.stringify(data);
+  navigator.clipboard.writeText(str).then(() => onShowToast(msg || "클립보드에 복사 완료! 📋"));
+};
+
+const mergePresets = (current, incoming) => {
+  const currentNames = new Set(current.map(p => p.name));
+  const newItems = incoming.filter(p => !currentNames.has(p.name)).map(p => ({ ...p, id: String(Date.now() + Math.random()) }));
+  return [...current, ...newItems].sort((a, b) => (a.order || 0) - (b.order || 0));
+};
+
+const mergeMenuHistory = (current, incoming) => {
+  const merged = new Set([...current, ...incoming]);
+  return [...merged].sort((a,b) => a.localeCompare(b, "ko"));
+};
+
+const driveUrlToDirectLink = (url) => {
+  if (!url) return "";
+  const reg = /\/file\/d\/([a-zA-Z0-9_-]{25,})|id=([a-zA-Z0-9_-]{25,})/;
+  const match = url.match(reg);
+  const id = match ? (match[1] || match[2]) : url;
+  if (id && id.length >= 25) return `https://drive.google.com/uc?export=download&id=${id}`;
+  return url; // 드라이브 형식이 아니면 일단 그대로 반환
+};
+
 const exportMD = (archive, presets, menuHistory) => {
   const lines = [];
   lines.push(`# ☕ 카페 메뉴 취합 시스템 백업`);
@@ -574,11 +600,15 @@ function PresetModal({ presets, currentRows, onSave, onLoad, onDelete, onClose }
   );
 }
 
-// ── DataModal (내보내기/불러오기) ─────────────────────────────────────────────
-function DataModal({ archive, presets, menuHistory, onImport, onClearMenuHistory, onClose }) {
+// ── DataModal (내보내기/불러오는/동기화) ─────────────────────────────────────
+function DataModal({ archive, presets, menuHistory, onImport, onClearMenuHistory, onClose, onSync, onCopy, syncUrls, onSaveSyncUrls }) {
   const [mode, setMode]     = useState("export");
   const [status, setStatus] = useState("");
+  const [showUrlSet, setShowUrlSet] = useState(false);
+  const [tempUrls, setTempUrls] = useState(syncUrls || { presets: "", menu: "" });
   const fileRef             = useRef(null);
+
+  useEffect(() => { setTempUrls(syncUrls); }, [syncUrls]);
 
   const handleImportFile = (e) => {
     const file = e.target.files?.[0];
@@ -601,6 +631,27 @@ function DataModal({ archive, presets, menuHistory, onImport, onClearMenuHistory
     e.target.value = "";
   };
 
+  const handleClipboardSync = async (type) => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text.trim()) { setStatus("❌ 클립보드가 비어있어요."); return; }
+      const data = JSON.parse(text);
+      if (onSync(type, data)) {
+        setStatus(`✅ ${type === "presets" ? "프리셋" : "메뉴 목록"} 동기화 완료!`);
+      } else {
+        setStatus("❌ 데이터 형식이 올바르지 않아요.");
+      }
+    } catch {
+      setStatus("❌ 클립보드에서 데이터를 읽을 수 없거나 형식이 틀려요.");
+    }
+  };
+
+  const handleSaveUrls = () => {
+    onSaveSyncUrls(tempUrls);
+    setStatus("✅ 보안 URL 설정이 저장되었습니다.");
+    setShowUrlSet(false);
+  };
+
   return (
     <div onClick={e => e.target === e.currentTarget && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(5,5,20,0.75)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center", backdropFilter: "blur(4px)" }}>
       <div style={{ width: "100%", maxWidth: 640, background: "linear-gradient(160deg,#12122a,#0d1a2a)", borderRadius: "20px 20px 0 0", padding: "24px 20px 44px", maxHeight: "80vh", overflowY: "auto", boxShadow: "0 -8px 40px rgba(0,0,0,0.5)", animation: "slideUp .3s ease" }}>
@@ -610,8 +661,8 @@ function DataModal({ archive, presets, menuHistory, onImport, onClearMenuHistory
         </div>
 
         <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 3, marginBottom: 20 }}>
-          {[["export","📤 내보내기"],["import","📥 불러오기"]].map(([k,l]) => (
-            <button key={k} onClick={() => setMode(k)} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 700, fontFamily: "inherit", background: mode===k ? "linear-gradient(135deg,#6c63ff,#4a9eff)" : "transparent", color: mode===k ? "#fff" : "#6060a0", cursor: "pointer" }}>{l}</button>
+          {[["export","📤 내보내기"],["import","📥 불러오기"],["sync","👥 공유/동기화"]].map(([k,l]) => (
+            <button key={k} onClick={() => { setMode(k); setStatus(""); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 700, fontFamily: "inherit", background: mode===k ? "linear-gradient(135deg,#6c63ff,#4a9eff)" : "transparent", color: mode===k ? "#fff" : "#6060a0", cursor: "pointer" }}>{l}</button>
           ))}
         </div>
 
@@ -661,11 +712,85 @@ function DataModal({ archive, presets, menuHistory, onImport, onClearMenuHistory
               📁 JSON 파일 선택
             </button>
             <input ref={fileRef} type="file" accept=".json" onChange={handleImportFile} style={{ display: "none" }} />
-            {status && (
-              <div style={{ marginTop: 14, padding: "12px 16px", borderRadius: 10, background: status.startsWith("✅") ? "rgba(80,224,160,0.1)" : "rgba(255,80,80,0.1)", border: `1px solid ${status.startsWith("✅") ? "rgba(80,224,160,0.3)" : "rgba(255,80,80,0.3)"}`, fontSize: 13, color: status.startsWith("✅") ? "#80e0a0" : "#ff8090" }}>
-                {status}
+          </div>
+        )}
+
+        {mode === "sync" && (
+          <div>
+            <p style={{ fontSize: 11, color: "#5060a0", marginBottom: 16, lineHeight: 1.6 }}>
+               JSON 데이터를 통해 팀원과 동기화하세요.<br/>
+               <span style={{ color: "#6c63ff" }}>URL 방식은 한 번 등록하면 버튼 하나로 업데이트됩니다.</span>
+            </p>
+            
+            {/* 보안 URL 동기화 */}
+            <div style={{ background: "rgba(108,99,255,0.08)", border: "1.5px solid rgba(108,99,255,0.3)", borderRadius: 14, padding: "16px 14px", marginBottom: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <span style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>🌐 보안 URL 원격 동기화</span>
+                <button onClick={() => setShowUrlSet(!showUrlSet)} style={{ background: "none", border: "none", color: "#a09aff", fontSize: 11, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>{showUrlSet ? "닫기" : "URL 설정하기"}</button>
               </div>
-            )}
+
+              {showUrlSet ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, animation: "fadeIn .2s ease" }}>
+                  <div>
+                    <label style={{ fontSize: 10, color: "#5060a0", display: "block", marginBottom: 4 }}>프리셋 JSON URL (구글 드라이브 등)</label>
+                    <input value={tempUrls.presets} onChange={e => setTempUrls({ ...tempUrls, presets: e.target.value })} placeholder="https://drive.google.com/..." style={{ width: "100%", padding: "10px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(108,99,255,0.2)", borderRadius: 10, fontSize: 12, color: "#fff", outline: "none" }} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 10, color: "#5060a0", display: "block", marginBottom: 4 }}>메뉴 목록 JSON URL</label>
+                    <input value={tempUrls.menu} onChange={e => setTempUrls({ ...tempUrls, menu: e.target.value })} placeholder="https://drive.google.com/..." style={{ width: "100%", padding: "10px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(108,99,255,0.2)", borderRadius: 10, fontSize: 12, color: "#fff", outline: "none" }} />
+                  </div>
+                  <button onClick={handleSaveUrls} style={{ width: "100%", padding: "10px", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#6c63ff,#4a9eff)", color: "#fff", fontSize: 12, fontWeight: 700 }}>저장 완료</button>
+                </div>
+              ) : (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => onSync("presets-url")}
+                    disabled={!syncUrls.presets}
+                    style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: syncUrls.presets ? "linear-gradient(135deg,rgba(108,99,255,0.3),rgba(72,198,239,0.2))" : "rgba(255,255,255,0.05)", color: syncUrls.presets ? "#a09aff" : "#404060", fontSize: 12, fontWeight: 700 }}>
+                    👥 프리셋 업데이트
+                  </button>
+                  <button
+                    onClick={() => onSync("menu-url")}
+                    disabled={!syncUrls.menu}
+                    style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: syncUrls.menu ? "linear-gradient(135deg,rgba(72,198,239,0.3),rgba(108,99,255,0.2))" : "rgba(255,255,255,0.05)", color: syncUrls.menu ? "#48c6ef" : "#404060", fontSize: 12, fontWeight: 700 }}>
+                    ☕ 메뉴 업데이트
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div style={{ padding: "0 4px", display: "flex", flexDirection: "column", gap: 12 }}>
+              {/* 클립보드 방식 */}
+              <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ flex: 1 }}>
+                   <div style={{ fontSize: 10, color: "#5060a0", marginBottom: 4 }}>👥 프리셋 클립보드</div>
+                   <div style={{ display: "flex", gap: 4 }}>
+                     <button onClick={() => onCopy("presets")} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.04)", color: "#8080a0", fontSize: 11 }}>복사</button>
+                     <button onClick={() => handleClipboardSync("presets")} style={{ flex: 1.5, padding: "9px", borderRadius: 8, border: "none", background: "rgba(108,99,255,0.15)", color: "#a09aff", fontSize: 11, fontWeight: 700 }}>동기화</button>
+                   </div>
+                </div>
+                <div style={{ flex: 1 }}>
+                   <div style={{ fontSize: 10, color: "#5060a0", marginBottom: 4 }}>☕ 메뉴 클립보드</div>
+                   <div style={{ display: "flex", gap: 4 }}>
+                     <button onClick={() => onCopy("menu")} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: "rgba(255,255,255,0.04)", color: "#8080a0", fontSize: 11 }}>복사</button>
+                     <button onClick={() => handleClipboardSync("menu")} style={{ flex: 1.5, padding: "9px", borderRadius: 8, border: "none", background: "rgba(72,198,239,0.15)", color: "#48c6ef", fontSize: 11, fontWeight: 700 }}>동기화</button>
+                   </div>
+                </div>
+              </div>
+
+              {/* 로컬 파일 동기화 */}
+              <button
+                onClick={() => onSync("local")}
+                style={{ width: "100%", padding: "11px", borderRadius: 10, border: "1px dashed rgba(240,160,80,0.3)", background: "rgba(240,160,80,0.04)", color: "#f0a050", fontSize: 11, fontWeight: 700 }}>
+                🔄 로컬 파일 동기화 (/public/sync/*.json)
+              </button>
+            </div>
+          </div>
+        )}
+
+        {status && (
+          <div style={{ marginTop: 14, padding: "12px 16px", borderRadius: 10, background: status.startsWith("✅") ? "rgba(80,224,160,0.1)" : "rgba(255,80,80,0.1)", border: `1px solid ${status.startsWith("✅") ? "rgba(80,224,160,0.3)" : "rgba(255,80,80,0.3)"}`, fontSize: 13, color: status.startsWith("✅") ? "#80e0a0" : "#ff8090", animation: "fadeIn .2s ease" }}>
+            {status}
           </div>
         )}
       </div>
@@ -724,12 +849,14 @@ export default function App() {
   const [presets,     setPresets]     = useState(loadPresets);
   const [menuHistory, setMenuHistory] = useState(loadMenuHist);
   const [archive,     setArchive]     = useState(loadArchive);
+  const [syncUrls,    setSyncUrls]    = useState(() => lsGet("oc_sync_urls", { presets: "", menu: "" }));
 
   // 변경 시 자동 저장
   useEffect(() => saveRows(rows),             [rows]);
   useEffect(() => savePresets(presets),       [presets]);
   useEffect(() => saveMenuHist(menuHistory),  [menuHistory]);
   useEffect(() => saveArchive(archive),       [archive]);
+  useEffect(() => lsSet("oc_sync_urls", syncUrls), [syncUrls]);
 
   const [view,        setView]        = useState("order");
   const [toast,       setToast]       = useState(null);
@@ -945,18 +1072,74 @@ export default function App() {
       });
     }
     if (data.presets?.length) {
-      setPresets(prev => {
-        const existIds = new Set(prev.map(p => p.id));
-        const newItems = data.presets.filter(p => !existIds.has(p.id));
-        return [...prev, ...newItems].sort((a,b) => a.order - b.order);
-      });
+      setPresets(prev => mergePresets(prev, data.presets));
     }
     if (data.menuHistory?.length) {
-      setMenuHistory(prev => {
-        const merged = new Set([...prev, ...data.menuHistory]);
-        return [...merged].sort((a,b) => a.localeCompare(b, "ko"));
-      });
+      setMenuHistory(prev => mergeMenuHistory(prev, data.menuHistory));
     }
+  };
+
+  // ── 데이터 동기화 핸들러 ──────────────────────────────────────────────────
+  const handleCopySpecific = (type) => {
+    if (type === "presets") copyToClipboard(presets, "프리셋 데이터가 복사되었습니다! 👥", showToast);
+    if (type === "menu")    copyToClipboard(menuHistory, "메뉴 목록이 복사되었습니다! ☕", showToast);
+  };
+
+  const handleSyncData = async (type, data) => {
+    if (type === "presets-url" || type === "menu-url") {
+      const url = type === "presets-url" ? syncUrls.presets : syncUrls.menu;
+      const target = type === "presets-url" ? "presets" : "menu";
+      const directUrl = driveUrlToDirectLink(url);
+      try {
+        const res = await fetch(directUrl);
+        if (!res.ok) throw new Error();
+        const json = await res.json();
+        if (target === "presets") setPresets(prev => mergePresets(prev, json));
+        else setMenuHistory(prev => mergeMenuHistory(prev, json));
+        showToast(`✅ ${target === "presets" ? "프리셋" : "메뉴"} URL 동기화 완료!`);
+        return true;
+      } catch {
+        showToast("❌ 데이터를 가져오지 못했습니다. URL과 권한을 확인하세요.");
+        return false;
+      }
+    }
+    if (!data) return false;
+    if (type === "presets") {
+      if (!Array.isArray(data)) return false;
+      setPresets(prev => mergePresets(prev, data));
+      showToast(`✅ 프리셋 동기화 완료!`);
+      return true;
+    }
+    if (type === "menu") {
+      if (!Array.isArray(data)) return false;
+      setMenuHistory(prev => mergeMenuHistory(prev, data));
+      showToast(`✅ 메뉴 목록 동기화 완료!`);
+      return true;
+    }
+    if (type === "local") {
+      try {
+        const pRes = await fetch("/sync/presets.json").catch(() => null);
+        const mRes = await fetch("/sync/menu_history.json").catch(() => null);
+        let count = 0;
+        if (pRes?.ok) {
+          const pd = await pRes.json();
+          setPresets(prev => mergePresets(prev, pd));
+          count++;
+        }
+        if (mRes?.ok) {
+          const md = await mRes.json();
+          setMenuHistory(prev => mergeMenuHistory(prev, md));
+          count++;
+        }
+        if (count > 0) showToast(`✅ 로컬 파일 ${count}종 동기화 완료!`);
+        else showToast("❌ 동기화할 로컬 파일을 찾을 수 없어요. (public/sync/ 확인)");
+        return true;
+      } catch (e) {
+        showToast("❌ 로컬 파일 읽기 실패");
+        return false;
+      }
+    }
+    return false;
   };
 
   // ── 통계 ─────────────────────────────────────────────────────────────────
@@ -1005,7 +1188,7 @@ export default function App() {
       {toast && <div style={{ position:"fixed", top:20, right:20, zIndex:9999, background:"#2d2d4a", border:"1px solid #6c63ff44", borderRadius:12, padding:"10px 18px", fontSize:13, color:"#c8c8ff", boxShadow:"0 4px 24px rgba(0,0,0,0.4)", animation:"toastIn .25s ease" }}>{toast}</div>}
 
       {showPreset && <PresetModal presets={presets} currentRows={rows} onSave={savePreset} onLoad={loadPreset} onDelete={deletePreset} onClose={() => setShowPreset(false)} />}
-      {showData   && <DataModal archive={archive} presets={presets} menuHistory={menuHistory} onImport={handleImport} onClearMenuHistory={() => { setMenuHistory([]); showToast("메뉴 히스토리 초기화됐어요"); }} onClose={() => setShowData(false)} />}
+      {showData   && <DataModal archive={archive} presets={presets} menuHistory={menuHistory} onImport={handleImport} onClearMenuHistory={() => { setMenuHistory([]); showToast("메뉴 히스토리 초기화됐어요"); }} onClose={() => setShowData(false)} onSync={handleSyncData} onCopy={handleCopySpecific} syncUrls={syncUrls} onSaveSyncUrls={setSyncUrls} />}
 
       <div style={{ maxWidth: 640, margin: "0 auto", padding: "0 16px 100px", position: "relative", zIndex: 1 }}>
 
