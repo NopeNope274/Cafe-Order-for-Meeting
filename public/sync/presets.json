@@ -1,0 +1,21 @@
+[
+  {
+    "name": "오전팀 (샘플)",
+    "savedAt": "2026-04-06",
+    "members": [
+      { "name": "김철수", "active": true },
+      { "name": "이영희", "active": true },
+      { "name": "박민수", "active": false }
+    ],
+    "order": 1
+  },
+  {
+    "name": "오후팀 (샘플)",
+    "savedAt": "2026-04-06",
+    "members": [
+      { "name": "최준호", "active": true },
+      { "name": "정다은", "active": true }
+    ],
+    "order": 2
+  }
+]
