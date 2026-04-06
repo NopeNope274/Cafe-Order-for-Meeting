@@ -1137,15 +1137,32 @@ export default function App() {
       const target = type === "presets-url" ? "presets" : "menu";
       const directUrl = driveUrlToDirectLink(url);
       try {
-        const res = await fetch(directUrl);
-        if (!res.ok) throw new Error();
-        const json = await res.json();
+        let json;
+        try {
+          // 1차 시도: 직접 통신 (일반적인 URL이거나 CORS 허용 시)
+          const res = await fetch(directUrl);
+          if (!res.ok) throw new Error();
+          json = await res.json();
+        } catch (err) {
+          // 2차 시도: 구글 드라이브 등 CORS 차단 링크를 위한 우회 프록시
+          try {
+            const px1 = await fetch(`https://corsproxy.io/?${encodeURIComponent(directUrl)}`);
+            if (!px1.ok) throw new Error();
+            json = await px1.json();
+          } catch (err2) {
+            // 3차 시도: 다른 우회 프록시
+            const px2 = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(directUrl)}`);
+            if (!px2.ok) throw new Error();
+            json = await px2.json();
+          }
+        }
+
         if (target === "presets") setPresets(prev => mergePresets(prev, json));
         else setMenuHistory(prev => mergeMenuHistory(prev, json));
         showToast(`✅ ${target === "presets" ? "프리셋" : "메뉴"} URL 동기화 완료!`);
         return true;
       } catch {
-        showToast("❌ 데이터를 가져오지 못했습니다. URL과 권한을 확인하세요.");
+        showToast("❌ 접근 실패. URL이 막혀있거나 브라우저 보안(CORS)에 의해 차단되었습니다.");
         return false;
       }
     }
